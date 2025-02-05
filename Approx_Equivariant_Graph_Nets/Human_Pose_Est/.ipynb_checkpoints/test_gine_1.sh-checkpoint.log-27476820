@@ -1,0 +1,3 @@
+Running on d-12-1-2
+Start time: Sun Nov 24 14:29:22 EST 2024
+Running command: python3 main_gine.py --epochs 100 --batch_size 64 --lr 0.001 --hid_dim 128 --num_layers 4 --dropout 0.1

@@ -1,0 +1,9 @@
+/var/spool/slurmd/job27244885/slurm_script: line 3: module: command not found
+/var/spool/slurmd/job27244885/slurm_script: line 6: cd: /Approx_Equivariant_Graph_Nets/Human_Pose_Est: No such file or directory
+Running: python3 main_gcn_aut.py --epochs 30 --hid_dim 128 --checkpoint './checkpoints' > logs/default_semgcn.log 2>&1
+Running: python3 main_gcn_aut.py --no_tie --epochs 30 --hid_dim 128 --checkpoint './checkpoints' > logs/relax_s16.log 2>&1
+Running: python3 main_gcn_aut.py --aut --epochs 30 --hid_dim 128 --checkpoint './checkpoints' > logs/s2_aut_g.log 2>&1
+Running: python3 main_gcn_aut.py --triv --epochs 30 --hid_dim 128 --checkpoint './checkpoints' > logs/trivial.log 2>&1
+Running: python3 main_gcn_aut.py --no_gc --no_ew --epochs 30 --hid_dim 128 --checkpoint './checkpoints' > logs/vanilla_gnet.log 2>&1
+Running: python3 main_gcn_aut.py --no_ew --epochs 30 --hid_dim 128 --checkpoint './checkpoints' > logs/gnet_gc.log 2>&1
+Running: python3 main_gcn_aut.py --no_gc --no_ew --pointwise --epochs 30 --hid_dim 128 --checkpoint './checkpoints' > logs/gnet_pt.log 2>&1

@@ -1,0 +1,5 @@
+/var/spool/slurmd/job27245096/slurm_script: line 4: module: command not found
+Running on d-10-15-2
+Start time: Wed Oct 23 11:14:44 EDT 2024
+Running command: python3 main_gcn_aut.py --no_tie --epochs 30 --hid_dim 128 --checkpoint './checkpoints'
+Job completed at: Wed Oct 23 14:24:18 EDT 2024

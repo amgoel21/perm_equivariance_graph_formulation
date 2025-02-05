@@ -1,0 +1,4 @@
+Running on d-12-9-1
+Start time: Tue Nov 26 08:15:00 EST 2024
+Running command: python3 main_gine.py --epochs 20 --batch_size 64 --lr 0.001 --hid_dim 128 --num_layers 4 --dropout 0.1 --subset 0.1 --perm_type complete --checkpoint checkpoints_complete --snapshot 5
+Job completed at: Tue Nov 26 08:15:52 EST 2024
