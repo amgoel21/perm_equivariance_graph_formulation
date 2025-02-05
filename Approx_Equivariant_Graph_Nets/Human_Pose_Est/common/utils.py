@@ -87,7 +87,15 @@ def perm_2d(perm):
     return perm_2d
 
 def orbit_2d(constructors):
-    # Returns 2d orbit of group from list of generators
+    """
+    Args: 
+    constructors: List of permutation constructors of equivariant group G
+
+    Returns:
+    List of lists of tuples (a,b)
+    Each tuple corresponds to edge from node a to node b
+    Each list is an orbit (meaning equivalent edges in 2-closure Graph)
+    """
     n = constructors[0].size
     perms_2d=[]
     for c in constructors:
@@ -102,20 +110,6 @@ def orbit_2d(constructors):
         altered_orbits.append(new_orbit)
     return altered_orbits
 
-
-
-def sparsify(constructors):
-    # Returns 
-    g = PermutationGroup(constructors)
-    orbits = g.orbits()
-    edges=[]
-    edge_categories=[]
-    for i in range(len(orbits)):
-        for o1 in orbits[i]:
-            for o2 in orbits[i]:
-                edges.append([o1,o2])
-                edge_categories.append(i)
-    return len(orbits),edges,edge_categories
 
 
 def sparsify_corrected(constructors,max_norm_main=20, max_norm_nonmain=1, soft = False):
