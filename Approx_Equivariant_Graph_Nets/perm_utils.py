@@ -69,9 +69,6 @@ def sparsify(constructors, main_edges, max_norm_main=20, max_norm_nonmain=1,soft
         edges: List of (source, target) main edges.
         edge_categories: List of category indices for each main edge.
     """
-    if not soft:
-        max_norm_main = float('inf')
-        max_norm_nonmain = 0
         
 
     #Compute categories using orbit_2d
