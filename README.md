@@ -1,1 +1,1 @@
-# perm_equivariance_graph_formulation
+# Permutation Equivariant Graph Formulation
