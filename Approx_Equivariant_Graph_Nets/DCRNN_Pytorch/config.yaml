@@ -1,0 +1,13 @@
+data:
+  train_path: "data/METR-LA-T3/train.npz"
+  val_path: "data/METR-LA-T3/val.npz"
+  test_path: "data/METR-LA-T3/test.npz"
+  graph_pkl_filename: "data/sensor_graph/adj_mx.pkl"
+
+model:
+  num_nodes: 207
+  hid_dim: 128
+  num_layers: 4
+  epochs: 40
+  batch_size: 64
+  learning_rate: 0.01
