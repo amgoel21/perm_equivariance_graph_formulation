@@ -60,6 +60,8 @@ def create_datasets():
     """
     graph_configs = {}
     dataset_splits = {}
+    train_data = {}
+    test_data={}
 
     # Define structure names (or structure IDs)
     structures = ["palindrome", "intersect"]
@@ -89,62 +91,100 @@ def create_datasets():
         }
 
         # Add `structure_id` as metadata in dataset
-        labeled_dataset = [(seq, label, structure_id) for seq, label in dataset]
+        labeled_dataset = [(seq.unsqueeze(1), int(label), structure_id) for seq, label in dataset]
+
 
         # Split into train and test
         train_size = int(0.8 * len(labeled_dataset))
         test_size = len(labeled_dataset) - train_size
         train_dataset, test_dataset = random_split(labeled_dataset, [train_size, test_size])
-
-        dataset_splits[structure_id] = {
-            "train": train_dataset,
-            "test": test_dataset
-        }
-    # Combine all training datasets into one large dataset
-    combined_train_dataset = ConcatDataset([dataset_splits[struct]["train"] for struct in structures])
-    combined_test_dataset = ConcatDataset([dataset_splits[struct]["test"] for struct in structures])
+        train_data[structure_id] = train_dataset
+        test_data[structure_id] = test_dataset
+ 
 
 
-    return graph_configs, combined_train_dataset, combined_test_dataset
+
+    return graph_configs, train_data, test_data
+
+
 
 
 
 def train_model():
-    graph_configs, combined_train_dataset, combined_test_dataset = create_datasets()
-    
+    graph_configs, train_datasets, test_datasets = create_datasets()  
+
     # Initialize model
     model = MultiGraphGATv2Model_inv(graph_configs, hid_dim=128, num_layers=4, p_dropout=0.1).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-    criterion = torch.nn.BCEWithLogitsLoss()  # Since we output a single scalar per graph
+    criterion = torch.nn.L1Loss()
 
+    structures = list(train_datasets.keys())
 
-    # Single DataLoader that contains all graph structures
-    train_loader = DataLoader(combined_train_dataset, batch_size=64, shuffle=True)
+    # Create DataLoaders per structure
+    train_loaders = {
+        struct: DataLoader(train_datasets[struct], batch_size=64, shuffle=True)
+        for struct in structures
+    }
 
-    
+    test_loaders = {
+        struct: DataLoader(test_datasets[struct], batch_size=64, shuffle=False)
+        for struct in structures
+    }
 
-    num_epochs = 10
+    # Wrap each DataLoader in an infinite cycle
+    from itertools import cycle
+    train_iters = {k: cycle(v) for k, v in train_loaders.items()}
+
+    num_epochs = 40
+    steps_per_epoch = 100  # Number of random batches per epoch
+
     for epoch in range(num_epochs):
         model.train()
         epoch_loss = 0.0
-        
-        for batch_inputs, batch_targets, structure_ids in train_loader:
-            batch_inputs, batch_targets = batch_inputs.to(device), batch_targets.to(device)
+
+        for _ in range(steps_per_epoch):
+            # Randomly pick one structure
+            struct = random.choice(structures)
+            batch_inputs, batch_targets, structure_ids = next(train_iters[struct])
+
+            batch_inputs = batch_inputs.to(device)
+            batch_targets = batch_targets.to(device)
 
             optimizer.zero_grad()
-
-            # Pass the structure_id so the model selects the correct graph structure
-            output = model(batch_inputs, structure_ids[0])  # Structure ID needed for selecting edges
-            
+            output = model(batch_inputs, structure_ids[0])  # Safe: all structure_ids in batch are the same
             loss = criterion(output.squeeze(), batch_targets.float())
             loss.backward()
             optimizer.step()
 
             epoch_loss += loss.item()
 
-        print(f"Epoch [{epoch+1}/{num_epochs}] Loss: {epoch_loss / len(train_loader)}")
+        avg_loss = epoch_loss / steps_per_epoch
+        print(f"Epoch [{epoch+1}/{num_epochs}] Loss: {avg_loss:.4f}")
 
     print("Training complete!")
+
+    model.eval()
+    print("Per-Structure Test Loss:")
+
+    with torch.no_grad():
+        for struct in structures:
+            test_loader = test_loaders[struct]
+            total_loss = 0.0
+            num_batches = 0
+
+            for batch_inputs, batch_targets, structure_ids in test_loader:
+                batch_inputs = batch_inputs.to(device)
+                batch_targets = batch_targets.to(device)
+
+                output = model(batch_inputs, structure_ids[0])  # all structure_ids in batch are the same
+                loss = criterion(output.squeeze(), batch_targets.float())
+
+                total_loss += loss.item()
+                num_batches += 1
+
+            avg_test_loss = total_loss / num_batches if num_batches > 0 else float('nan')
+            print(f"  {struct}: Avg L1 Loss = {avg_test_loss:.4f}")
+
 
 if __name__ == "__main__":
     train_model()
