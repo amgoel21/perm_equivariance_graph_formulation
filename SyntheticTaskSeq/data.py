@@ -4,6 +4,7 @@ import random
 import string
 import argparse
 
+
 def set_seed(seed=99):
     random.seed(seed)
     torch.manual_seed(seed)
@@ -18,6 +19,8 @@ class IsBalancedParenthesisDataset(Dataset):
         assert seq_length % 2 == 0, 'must specify even length sequence for nontrivial dataset!'
         self.num_samples = num_samples
         self.seq_length = seq_length
+        self.vocab = ["(",")","{","}","[","]"]   
+        self.token2idx = {ch: i for i, ch in enumerate(self.vocab)}
         self.data = self.generate_data()
     
     def is_balanced(self, s):
@@ -58,6 +61,8 @@ class IsBalancedParenthesisDataset(Dataset):
     
     def __getitem__(self, idx):
         return self.data[idx]
+        
+        
 
 
 class IsPalindromeDataset(Dataset):
@@ -158,6 +163,7 @@ class IsPalindromeDataset(Dataset):
     
     def __getitem__(self, idx):
         return self.data[idx]
+        
 
 class IntersectDataset(Dataset):
     '''
@@ -167,7 +173,7 @@ class IntersectDataset(Dataset):
     - Invariant task: Determine the size of the intersection of set1 and set2
     - Equivariant task: for each element in set1, determine if it is contained in set2, and vice versa 
     '''
-    def __init__(self, num_samples=10000, seq_length=6, seed=42, equivariant=True, vocab_size=4):
+    def __init__(self, num_samples=10000, seq_length=6, seed=42, equivariant=False, vocab_size=4):
         set_seed(seed)
         assert seq_length % 2 ==0, 'must pass in even sequence length!'
         self.num_samples = num_samples
@@ -189,6 +195,7 @@ class IntersectDataset(Dataset):
             target2 = [1 if ch in set1 else 0 for ch in seq_list[mid:]]
             target = target1 + target2
             seq_tensor = torch.tensor([ord(ch) for ch in seq_list], dtype=torch.float32)
+            seq_tensor = seq_tensor - 97
             if self.equiv:
                 target_tensor = torch.tensor(target, dtype=torch.long)
             else:
@@ -205,15 +212,78 @@ class IntersectDataset(Dataset):
     def __getitem__(self, idx):
         return self.data[idx]
 
+
+
+
+class MaxCyclicSumDataset(Dataset):
+    '''
+    Dataset for finding the unique contiguous (including cyclic wraparound) subsequence
+    of a specified length (cyc_length) with the maximum sum.
+
+    Each element in the sequence is an integer in the range [0, vocab_size - 1].
+
+    Example:
+    sequence = [7, 2, 4, 1, 9, 8], cyc_length=3
+    label =    [1, 0, 0, 0, 1, 1]  # because [7, 9, 8] is the unique max-sum cyclic subarray
+    '''
+    def __init__(self, num_samples=10000, seq_length=6, cyc_length=3, vocab_size=10, seed=42):
+        random.seed(seed)
+        torch.manual_seed(seed)
+        self.num_samples = num_samples
+        self.seq_length = seq_length
+        self.cyc_length = cyc_length
+        self.vocab_size = vocab_size
+        self.data = self.generate_data()
+
+    def generate_data(self):
+        data = []
+        while len(data) < self.num_samples:
+            seq = [random.randint(0, self.vocab_size - 1) for _ in range(self.seq_length)]
+
+            # Create a doubled version for wraparound
+            doubled_seq = seq + seq[:self.cyc_length - 1]
+            window_sums = []
+            for i in range(self.seq_length):
+                window_sums.append((sum(doubled_seq[i:i + self.cyc_length]), i))
+
+            # Sort by descending sum
+            window_sums.sort(reverse=True)
+            max_sum, max_start = window_sums[0]
+
+            # Check uniqueness
+            if len(window_sums) > 1 and window_sums[0][0] == window_sums[1][0]:
+                continue  # Not unique max sum → regenerate
+
+            # Unique max found
+            label = [0] * self.seq_length
+            for i in range(self.cyc_length):
+                label[(max_start + i) % self.seq_length] = 1
+
+            seq_tensor = torch.tensor(seq, dtype=torch.long)
+            label_tensor = torch.tensor(label, dtype=torch.long)
+            data.append((seq_tensor, label_tensor))
+
+        return data
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+
+
+
 # Example usage
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--task', type=str, default='palindrome', choices=['palindrome','balance','intersect'])
+    parser.add_argument('--task', type=str, default='palindrome', choices=['palindrome','balance','intersect', "cyclicsum"])
 
     parser.add_argument('--num_samples', type=int, default=20)
-    parser.add_argument('--seq_length', type=int, default=5)
+    parser.add_argument('--seq_length', type=int, default=6)
     parser.add_argument('--batch_size', type=int, default=20)
     parser.add_argument('--palindrome_length', type=int, default=2)
+    parser.add_argument('--cyc_length', type=int, default=3)
     parser.add_argument('--equiv', action='store_true', help='use equivariant labels (i.e. same size as seq_length)')
     parser.add_argument('--vocab_size', type=int, default=4, help='vocab size for the set intersection (TODO: extend this for all other tasks)')
     parser.add_argument('--seed', type=int, default=9)
@@ -231,6 +301,10 @@ def main():
         dataset = IntersectDataset(num_samples=args.num_samples, 
                                    seq_length=args.seq_length, seed=args.seed,
                                    equivariant=args.equiv, vocab_size=args.vocab_size)
+    elif args.task == 'cyclicsum':
+        dataset = MaxCyclicSumDataset(num_samples=args.num_samples, 
+                                   seq_length=args.seq_length, seed=args.seed,
+                                   cyc_length=args.cyc_length, vocab_size = args.vocab_size)
     
     
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
