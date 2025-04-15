@@ -306,181 +306,59 @@ class GATv2Model(nn.Module):
 
 
 
-class MultiGraphGATv2Model_equiv(nn.Module):
-    """
-    GAT-based model that supports multiple equivariant input structures while sharing the same GNN.
-    Each structure has its own edge_index, edge_categories, input_mlp, and output_layer.
-    """
-    def __init__(self, graph_configs, hid_dim, num_layers=4, p_dropout=None):
-        """
-        Args:
-            graph_configs: A dictionary mapping structure IDs to their respective configurations:
-                           { structure_id: {"n_nodes": ..., "perms": ..., "adj": ..., "coords_dim": ..., "orbits": ..., "sparse": ...} }
-            hid_dim: Hidden dimension size.
-            num_layers: Number of GNN layers.
-            p_dropout: Dropout probability.
-        """
-        super(MultiGraphGATv2Model_equiv, self).__init__()
-        
-        self.graph_configs = graph_configs  
-        self.hid_dim = hid_dim
-        self.shared_num_heads = 8
-        self.shared_head_dim = hid_dim // self.shared_num_heads
+class TokenEmbedder(nn.Module):
+    def __init__(self, vocab_size, embedding_dim):
+        super(TokenEmbedder, self).__init__()
+        self.embedding = nn.Embedding(vocab_size, embedding_dim)
 
-        # Store edge structures for each graph configuration
-        self.edge_indices = {}
-        self.num_categories= {}
-        self.edge_categories = {}
-        self.edge_embedders = {}
+    def forward(self, x):
+        return self.embedding(x)
 
-        # Store input and output layers for each structure
-        self.input_mlps = nn.ModuleDict()
-        self.output_layers = nn.ModuleDict()
-
-        # Process each graph configuration
-        for struct_id, config in graph_configs.items():
-            n_nodes, perms, adj, coords_dim, orbits, sparse = config["n_nodes"], config['perms'], config["adj"], config["coords_dim"], config["orbits"], config["sparse"]
-
-
-            num_categories, edge_index, edge_categories = compute_closure(n_nodes, perms, orbits, adj, sparse)
-            
-            self.edge_indices[struct_id] = edge_index
-            self.edge_categories[struct_id] = edge_categories
-            self.num_categories[struct_id] = num_categories
-
-            # Define edge embedder per structure
-            self.edge_embedders[struct_id] = EdgeEmbedder(num_categories, embedding_dim=hid_dim)
-
-            # Define structure-specific input and output layers
-            self.input_mlps[struct_id] = nn.Sequential(
-                nn.Linear(coords_dim[0], hid_dim),
-                nn.LayerNorm(hid_dim),
-                nn.ReLU(),
-                nn.Linear(hid_dim, hid_dim),
-                nn.LayerNorm(hid_dim)
-            )
-            self.output_layers[struct_id] = nn.Linear(hid_dim, coords_dim[1])
-
-        # Shared GAT Layers
-        self.conv_layers = nn.ModuleList([
-            GATv2Conv(hid_dim, self.shared_head_dim, edge_dim=hid_dim, heads=self.shared_num_heads, concat=True)
-            for _ in range(num_layers)
-        ])
-        self.layer_norms = nn.ModuleList([nn.LayerNorm(hid_dim) for _ in range(num_layers)])
-        self.projection_layers = nn.ModuleList([nn.Linear(hid_dim, hid_dim) for _ in range(num_layers)])
-
-        # Dropout
-        self.dropout = nn.Dropout(p_dropout) if p_dropout is not None else None
-
-    def forward(self, x, structure_id):
-        """
-        Forward pass using the appropriate graph structure.
-        
-        Args:
-            x: Tensor of shape (batch_size, n_nodes, coords_dim[0]), where n_nodes is specific to the structure.
-            structure_id: Identifier for the input structure (determines edge_index, edge_categories, etc.).
-
-        Returns:
-            Tensor of shape (batch_size, n_nodes, coords_dim[1]) for the given structure.
-        """
-        device = x.device
-        batch_size, num_nodes, _ = x.size()
-
-        # Get the correct structure-specific components
-        edge_index = self.edge_indices[structure_id].to(device)
-        edge_categories = self.edge_categories[structure_id].to(device)
-        edge_embedder = self.edge_embedders[structure_id]
-        input_mlp = self.input_mlps[structure_id]
-        output_layer = self.output_layers[structure_id]
-
-        # Create edge features for the batch
-        edge_features = edge_embedder(edge_categories).unsqueeze(0).expand(batch_size, -1, -1)
-
-        # Flatten batch and node dimensions
-        h = x.view(batch_size * num_nodes, -1)
-        h = input_mlp(h)
-
-        # Create batched edge index for PyG
-        batch_offset = torch.arange(batch_size, device=device).repeat_interleave(edge_index.size(1)) * num_nodes
-        batched_edge_index = edge_index.repeat(1, batch_size) + batch_offset
-
-        # Process through GAT layers
-        for conv, ln, proj in zip(self.conv_layers, self.layer_norms, self.projection_layers):
-            h_prev = h
-            h = conv(h, batched_edge_index, edge_features.reshape(-1, edge_features.size(-1)))
-            h = proj(h)  # Project concatenated heads to match input dimension
-            h = ln(h)
-            h = F.relu(h)
-            h = h + h_prev  # Residual connection
-
-        # Reshape back to (batch_size, n_nodes, hid_dim)
-        h = h.view(batch_size, num_nodes, -1)
-
-        # Apply structure-specific output layer
-        output = output_layer(h)
-
-        # Apply dropout if training
-        if self.dropout is not None and self.training:
-            output = self.dropout(output)
-
-        return output
 
 class MultiGraphGATv2Model_inv(nn.Module):
-    """
-    GAT-based model that supports multiple invariant input structures while sharing the same GNN.
-    Each structure has its own edge_index, edge_categories, input_mlp, and output_layer.
-    """
-    def __init__(self, graph_configs, hid_dim, num_layers=4, p_dropout=None):
-        """
-        Args:
-            graph_configs: A dictionary mapping structure IDs to their respective configurations:
-                           { structure_id: {"n_nodes": ..., "perms": ..., "adj": ..., "coords_dim": ..., "orbits": ..., "sparse": ...} }
-            hid_dim: Hidden dimension size.
-            num_layers: Number of GNN layers.
-            p_dropout: Dropout probability.
-        """
+    def __init__(self, graph_configs, hid_dim, num_layers=4, p_dropout=0.05, vocab_size=20):
         super(MultiGraphGATv2Model_inv, self).__init__()
-        
-        self.graph_configs = graph_configs  
+
+        self.graph_configs = graph_configs
         self.hid_dim = hid_dim
         self.shared_num_heads = 8
         self.shared_head_dim = hid_dim // self.shared_num_heads
 
-        # Store edge structures for each graph configuration
+
+        self.token_embedders = nn.ModuleDict()
+
         self.edge_indices = {}
         self.num_categories= {}
         self.edge_categories = {}
         self.edge_embedders = {}
+        self.output_dims = {}
 
-        # Store input and output layers for each structure
-        self.input_mlps = nn.ModuleDict()
-        self.output_layers = nn.ModuleDict()
-
-        # Process each graph configuration
         for struct_id, config in graph_configs.items():
-            n_nodes, perms, adj, coords_dim, orbits, sparse = config["n_nodes"], config['perms'], config["adj"], config["coords_dim"], config["orbits"], config["sparse"]
-
+            n_nodes, perms, adj, coords_dim, orbits, sparse, out_dim = config["n_nodes"], config['perms'], config["adj"], config["coords_dim"], config["orbits"], config["sparse"], config["out_dim"]
 
             num_categories, edge_index, edge_categories = compute_closure(n_nodes, perms, orbits, adj, sparse)
-            
+
             self.edge_indices[struct_id] = edge_index
             self.edge_categories[struct_id] = edge_categories
             self.num_categories[struct_id] = num_categories
-
-            # Define edge embedder per structure
             self.edge_embedders[struct_id] = EdgeEmbedder(num_categories, embedding_dim=hid_dim)
 
-            # Define structure-specific input and output layers
-            self.input_mlps[struct_id] = nn.Sequential(
-                nn.Linear(coords_dim[0], hid_dim),
-                nn.LayerNorm(hid_dim),
-                nn.ReLU(),
-                nn.Linear(hid_dim, hid_dim),
-                nn.LayerNorm(hid_dim)
-            )
-            self.output_layers[struct_id] = nn.Linear(hid_dim, coords_dim[1])
+            # ✅ CHANGE 2: Create token embedder for each structure
+            self.token_embedders[struct_id] = TokenEmbedder(vocab_size, hid_dim)
 
-        # Shared GAT Layers
+            self.output_dims[struct_id] = out_dim
+
+        self.max_output_dim = max(self.output_dims.values())
+
+        self.input_mlp = nn.Sequential(
+            nn.LayerNorm(hid_dim),
+            nn.ReLU(),
+            nn.Linear(hid_dim, hid_dim),
+            nn.LayerNorm(hid_dim)
+        )
+
+        self.output_layer = nn.Linear(hid_dim, self.max_output_dim)
+
         self.conv_layers = nn.ModuleList([
             GATv2Conv(hid_dim, self.shared_head_dim, edge_dim=hid_dim, heads=self.shared_num_heads, concat=True)
             for _ in range(num_layers)
@@ -488,56 +366,148 @@ class MultiGraphGATv2Model_inv(nn.Module):
         self.layer_norms = nn.ModuleList([nn.LayerNorm(hid_dim) for _ in range(num_layers)])
         self.projection_layers = nn.ModuleList([nn.Linear(hid_dim, hid_dim) for _ in range(num_layers)])
 
-        # Dropout
         self.dropout = nn.Dropout(p_dropout) if p_dropout is not None else None
 
-    def forward(self, x, structure_id):
+    def forward(self, x, structure_ids):
         """
-        Forward pass using the appropriate graph structure.
-        
-        Args:
-            x: Tensor of shape (batch_size, n_nodes, input_dim)
-            structure_id: Identifier for the input structure.
-        
-        Returns:
-            Tensor of shape (batch_size, 1) - single output per input graph.
+        x: (batch_size, num_nodes, 1)
+        structure_ids: list of structure_id strings (len = batch_size)
         """
         device = x.device
         batch_size, num_nodes, _ = x.size()
-        
+        outputs = []
     
-        # Get the correct graph structure for this batch
-        edge_index = self.edge_indices[structure_id].to(device)
-        edge_embedder = self.edge_embedders[structure_id].to(device)
-        input_mlp = self.input_mlps[structure_id].to(device)
-        output_layer = self.output_layers[structure_id].to(device)
+        for i in range(batch_size):
+            struct_id = structure_ids[i]
+            edge_index = self.edge_indices[struct_id].to(device)
+            edge_embedder = self.edge_embedders[struct_id].to(device)
+            token_embedder = self.token_embedders[struct_id].to(device)
     
-        # Edge Embeddings
-        edge_features = edge_embedder(self.edge_categories[structure_id].to(device)).unsqueeze(0).expand(batch_size, -1, -1)
+            edge_feat = edge_embedder(self.edge_categories[struct_id].to(device)).unsqueeze(0)
+            node_indices = x[i].squeeze(-1).long()  # (num_nodes,)
+            h = token_embedder(node_indices.unsqueeze(0))
+            h = self.input_mlp(h)
+            h = h.squeeze(0)
+            edge_feat = edge_feat.squeeze(0)
     
-        # Flatten batch and node dimensions
-        h = input_mlp(x.view(batch_size * num_nodes, -1))
+            for conv, ln, proj in zip(self.conv_layers, self.layer_norms, self.projection_layers):
+                h_prev = h
+                h = conv(h, edge_index, edge_feat)
+                h = proj(h)
+                h = ln(h)
+                h = F.relu(h)
+                h = h + h_prev
     
-        # Batched edge index
-        batch_offset = torch.arange(batch_size, device=device).repeat_interleave(edge_index.size(1)) * num_nodes
-        batched_edge_index = edge_index.repeat(1, batch_size) + batch_offset
+            h = h.sum(dim=0, keepdim=True)  # (1, hid_dim)
+            out = self.output_layer(h)  # (1, max_output_dim)
     
-        # Process through GAT layers
-        for conv, ln, proj in zip(self.conv_layers, self.layer_norms, self.projection_layers):
-            h_prev = h
-            h = conv(h, batched_edge_index, edge_features.reshape(-1, edge_features.size(-1)))
-            h = proj(h)
-            h = ln(h)
-            h = F.relu(h)
-            h = h + h_prev  # Residual connection
+            if self.dropout is not None and self.training:
+                out = self.dropout(out)
     
-        # Reshape back to (batch_size, n_nodes, hid_dim)
-        h = h.view(batch_size, num_nodes, -1)
-        h_agg = torch.sum(h, dim=1)
-        # Apply structure-specific output layer
-        output = output_layer(h_agg)  # (batch_size, 1)
+            outputs.append(out)
     
-        return output
+        return torch.cat(outputs, dim=0)  # (batch_size, max_output_dim)
+
+
+
+
+
+class MultiGraphGATv2Model_equiv(nn.Module):
+    """
+    GAT-based model that supports multiple equivariant input structures.
+    Each structure has its own token embedding and per-node output head.
+    """
+    def __init__(self, graph_configs, hid_dim, num_layers=4, p_dropout=0.05, vocab_size=20):
+        super(MultiGraphGATv2Model_equiv, self).__init__()
+
+        self.graph_configs = graph_configs
+        self.hid_dim = hid_dim
+        self.shared_num_heads = 8
+        self.shared_head_dim = hid_dim // self.shared_num_heads
+
+        self.token_embedders = nn.ModuleDict()
+        self.edge_indices = {}
+        self.num_categories= {}
+        self.edge_categories = {}
+        self.edge_embedders = {}
+        self.output_dims = {}
+
+        for struct_id, config in graph_configs.items():
+            n_nodes, perms, adj, coords_dim, orbits, sparse, out_dim = config["n_nodes"], config['perms'], config["adj"], config["coords_dim"], config["orbits"], config["sparse"], config["out_dim"]
+
+            num_categories, edge_index, edge_categories = compute_closure(n_nodes, perms, orbits, adj, sparse)
+
+            self.edge_indices[struct_id] = edge_index
+            self.edge_categories[struct_id] = edge_categories
+            self.num_categories[struct_id] = num_categories
+            self.edge_embedders[struct_id] = EdgeEmbedder(num_categories, embedding_dim=hid_dim)
+            self.token_embedders[struct_id] = TokenEmbedder(vocab_size, hid_dim)
+            self.output_dims[struct_id] = out_dim
+
+        self.input_mlp = nn.Sequential(
+            nn.LayerNorm(hid_dim),
+            nn.ReLU(),
+            nn.Linear(hid_dim, hid_dim),
+            nn.LayerNorm(hid_dim)
+        )
+
+        self.conv_layers = nn.ModuleList([
+            GATv2Conv(hid_dim, self.shared_head_dim, edge_dim=hid_dim, heads=self.shared_num_heads, concat=True)
+            for _ in range(num_layers)
+        ])
+        self.layer_norms = nn.ModuleList([nn.LayerNorm(hid_dim) for _ in range(num_layers)])
+        self.projection_layers = nn.ModuleList([nn.Linear(hid_dim, hid_dim) for _ in range(num_layers)])
+
+        self.output_layer = nn.Linear(hid_dim, 2)
+
+        self.dropout = nn.Dropout(p_dropout) if p_dropout is not None else None
+
+    def forward(self, x, structure_ids):
+        """
+        x: (batch_size, num_nodes, 1)
+        structure_ids: list of strings of length batch_size
+        """
+        device = x.device
+        batch_size, num_nodes, _ = x.size()
+        outputs = []
+    
+        for i in range(batch_size):
+            struct_id = structure_ids[i]
+            edge_index = self.edge_indices[struct_id].to(device)
+            edge_embedder = self.edge_embedders[struct_id].to(device)
+            token_embedder = self.token_embedders[struct_id].to(device)
+    
+            edge_feat = edge_embedder(self.edge_categories[struct_id].to(device)).unsqueeze(0)  # (1, num_edges, hid_dim)
+            node_indices = x[i].squeeze(-1).long()  # (num_nodes,)
+            h = token_embedder(node_indices.unsqueeze(0))  # (1, num_nodes, hid_dim)
+            h = self.input_mlp(h)  # (1, num_nodes, hid_dim)
+    
+            h = h.squeeze(0)  # (num_nodes, hid_dim)
+            edge_feat = edge_feat.squeeze(0)  # (num_edges, hid_dim)
+    
+            for conv, ln, proj in zip(self.conv_layers, self.layer_norms, self.projection_layers):
+                h_prev = h
+                h = conv(h, edge_index, edge_feat)
+                h = proj(h)
+                h = ln(h)
+                h = F.relu(h)
+                h = h + h_prev  # residual
+    
+            out = self.output_layer(h)  # (num_nodes, out_dim)
+            if self.dropout is not None and self.training:
+                out = self.dropout(out)
+    
+            outputs.append(out.unsqueeze(0))  # (1, num_nodes, out_dim)
+    
+        return torch.cat(outputs, dim=0)  # (batch_size, num_nodes, out_dim)
+    
+    
+    
+    
+    
+    
+
+
 
 
 
