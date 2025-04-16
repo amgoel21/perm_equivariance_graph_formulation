@@ -3,6 +3,7 @@ from torch.utils.data import Dataset, DataLoader
 import random
 import string
 import argparse
+from collections import Counter, defaultdict
 
 
 def set_seed(seed=99):
@@ -271,13 +272,86 @@ class MaxCyclicSumDataset(Dataset):
     def __getitem__(self, idx):
         return self.data[idx]
 
+class LongestPalindromeDataset(Dataset):
+    """
+    Given a string of lowercase letters, label = length of the longest palindrome
+    that can be formed by permuting those letters.
+    E.g. 'abccccdd' → 7  (dccaccd)
+
+    Symmetry: invariant to S_n, all permutations of the input
+    """
+    def __init__(self, num_samples=10000, seq_length=10, seed=42,
+                 vocab_size=20):
+        set_seed(seed)
+        self.num_samples = num_samples
+        self.seq_length = seq_length
+        # default to full lowercase alphabet
+        assert 2 <= vocab_size <= 26, "Vocab size must be in reasonable range"
+        self.vocab = list("abcdefghijklmnopqrstuvwxyz")[:vocab_size]
+        self.token2idx = {ch: i for i, ch in enumerate(self.vocab)}
+        pool = self._generate(num_samples*10)
+        self.data = self._rebalance(pool)
+
+    def _compute_label(self, seq):
+        cnt = Counter(seq)
+        # sum of even parts
+        pair_sum = sum((c // 2) * 2 for c in cnt.values())
+        # if any odd leftover, we can put one in the middle
+        return pair_sum + (1 if any(c % 2 for c in cnt.values()) else 0)
+
+    def _generate(self, num_samples):
+        data = []
+        for _ in range(num_samples):
+            # sample a random string
+            seq = [random.choice(self.vocab) for _ in range(self.seq_length)]
+            lab = self._compute_label(seq)
+            # map chars → indices
+            seq_tensor = torch.tensor([self.token2idx[ch] for ch in seq],
+                                      dtype=torch.float32)
+            label_tensor = torch.tensor(lab, dtype=torch.long)
+            data.append((seq_tensor, label_tensor))
+        return data
+
+    def _rebalance(self, pool):
+        # bucket by label
+        buckets = defaultdict(list)
+        for seq, lab in pool:
+            buckets[int(lab.item())].append((seq, lab))
+
+        labels = list(buckets.keys())
+        num_classes = len(labels)
+        per_class = self.num_samples // num_classes
+
+        balanced = []
+        for lab in labels:
+            samples = buckets[lab]
+            if len(samples) >= per_class:
+                chosen = random.sample(samples, per_class)
+            else:
+                # if too few, allow repeats
+                chosen = samples + random.choices(samples, k=per_class - len(samples))
+            balanced.extend(chosen)
+
+        # if there's any slack (due to integer division), fill from the pool
+        if len(balanced) < self.num_samples:
+            extra = random.sample(pool, self.num_samples - len(balanced))
+            balanced.extend(extra)
+        # or trim if we overshot
+        random.shuffle(balanced)
+        return balanced[: self.num_samples]
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        return self.data[idx]
 
 
 
 # Example usage
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--task', type=str, default='palindrome', choices=['palindrome','balance','intersect', "cyclicsum"])
+    parser.add_argument('--task', type=str, default='palindrome', choices=['palindrome','balance','intersect', "cyclicsum", "longestpal"])
 
     parser.add_argument('--num_samples', type=int, default=20)
     parser.add_argument('--seq_length', type=int, default=6)
@@ -305,8 +379,13 @@ def main():
         dataset = MaxCyclicSumDataset(num_samples=args.num_samples, 
                                    seq_length=args.seq_length, seed=args.seed,
                                    cyc_length=args.cyc_length, vocab_size = args.vocab_size)
-    
-    
+    elif args.task == 'longestpal':
+        dataset = LongestPalindromeDataset(
+            num_samples=args.num_samples,
+            seq_length=args.seq_length,
+            seed=args.seed
+        )
+
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
     
     for batch in dataloader:
@@ -314,6 +393,9 @@ def main():
         print("Sequences:", sequences)
         print("Labels:", labels)
         break  # Print only first batch
+
+    dist = Counter(int(label.item()) for _, label in dataset)
+    print("Label distribution:", dist)
 
 if __name__ == "__main__":
     main()
