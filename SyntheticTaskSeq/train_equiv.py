@@ -84,7 +84,7 @@ def create_datasets():
         print(structure_id)
         if structure_id == "palindrome":
             seq_length = 10
-            dataset = IsPalindromeDataset(num_samples=15000, seq_length=seq_length, palindrome_length=4,equivariant=True)
+            dataset = IsPalindromeDataset(num_samples=10000, seq_length=seq_length, palindrome_length=4,equivariant=True)
             graph_configs[structure_id] = {
             "n_nodes": 10,
             "perms": generate_graph_structure("palindrome", seq_length),
@@ -97,7 +97,7 @@ def create_datasets():
         elif structure_id == "intersect":
             print(f"Vocab size: 5")
             seq_length = 10
-            dataset = IntersectDataset(num_samples=15000, seq_length=seq_length, vocab_size=5,equivariant=True)
+            dataset = IntersectDataset(num_samples=10000, seq_length=seq_length, vocab_size=5,equivariant=True)
             graph_configs[structure_id] = {
             "n_nodes": 10,
             "perms": generate_graph_structure("intersect", seq_length),
@@ -109,7 +109,7 @@ def create_datasets():
         }
         elif structure_id == "cyclicsum":
             seq_length = 10
-            dataset = MaxCyclicSumDataset(num_samples=15000, seq_length=seq_length, cyc_length = 3, vocab_size=5)
+            dataset = MaxCyclicSumDataset(num_samples=10000, seq_length=seq_length, cyc_length = 3, vocab_size=5)
             graph_configs[structure_id] = {
             "n_nodes": 10,
             "perms": generate_graph_structure("cyclicsum", seq_length),
@@ -335,7 +335,7 @@ def run_experiments():
             print(f"  Trial {trial + 1}/3")
 
             # Sample training and validation sets
-            n_total = int(base_size * (frac1 + frac2 + frac3))
+            n_total = int(base_size)
             n1 = int(n_total * frac1)
             n2 = int(n_total * frac2)
             n3 = int(n_total * frac3)
