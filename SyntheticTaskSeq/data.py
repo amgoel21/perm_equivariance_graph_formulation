@@ -346,12 +346,64 @@ class LongestPalindromeDataset(Dataset):
     def __getitem__(self, idx):
         return self.data[idx]
 
+class DetectCapitalDataset(Dataset):
+    """
+    LeetCode “Detect Capital”:
+    Label 1 if word is all caps, all lowercase,
+    or only first letter capitalized; else 0.
+
+    e.g. USA = 1
+         FlooR = 0
+         tremendous = 1
+         Sun = 1
+
+    Invariant task: symmetry group is S_{n-1}, you can freely permute all except first token.
+    """
+    def __init__(self, num_samples=10000, word_length=6, seed=42):
+        # recommended word length of 6, so that there are a decent number
+        # of ULLLLL examples
+
+        set_seed(seed)
+        self.num_samples = num_samples
+        self.word_length = word_length
+        lows = list(string.ascii_lowercase)
+        ups  = [c.upper() for c in lows]
+        # map a–z → 0–25, A–Z → 26–51
+        self.char2idx = {c:i for i,c in enumerate(lows)}
+        self.char2idx.update({C:i+26 for i,C in enumerate(ups)})
+        assert 52**word_length > num_samples * 2, "Not enough data to generate"
+        self.data = self._generate()
+
+    def _is_correct(self, w):
+        return w.isupper() or w.islower() or (w[0].isupper() and w[1:].islower())
+
+    def _generate(self):
+        data, t_true, t_false = [], 0, 0
+        half = self.num_samples // 2
+        all_chars = list(self.char2idx.keys())
+        while len(data) < self.num_samples:
+            w = ''.join(random.choice(all_chars) for _ in range(self.word_length))
+            lbl = int(self._is_correct(w))
+            if (lbl == 1 and t_true  < half) or (lbl == 0 and t_false < half):
+                seq = torch.tensor([self.char2idx[ch] for ch in w],
+                                   dtype=torch.float32)
+                lab = torch.tensor(lbl, dtype=torch.long)
+                data.append((seq, lab))
+                if lbl: t_true  += 1
+                else:   t_false += 1
+        return data
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        return self.data[idx]
 
 
 # Example usage
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--task', type=str, default='palindrome', choices=['palindrome','balance','intersect', "cyclicsum", "longestpal"])
+    parser.add_argument('--task', type=str, default='palindrome', choices=['palindrome','balance','intersect', "cyclicsum", "longestpal", "detectcapital"])
 
     parser.add_argument('--num_samples', type=int, default=20)
     parser.add_argument('--seq_length', type=int, default=6)
@@ -385,6 +437,14 @@ def main():
             seq_length=args.seq_length,
             seed=args.seed
         )
+    elif args.task == 'detectcapital':
+        dataset = DetectCapitalDataset(
+            num_samples=args.num_samples,
+            word_length=args.seq_length,
+            seed=args.seed
+        )
+    else:
+        raise ValueError("Invalid task")
 
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
     
@@ -394,8 +454,8 @@ def main():
         print("Labels:", labels)
         break  # Print only first batch
 
-    dist = Counter(int(label.item()) for _, label in dataset)
-    print("Label distribution:", dist)
+    #dist = Counter(int(label.item()) for _, label in dataset)
+    #print("Label distribution:", dist)
 
 if __name__ == "__main__":
     main()
