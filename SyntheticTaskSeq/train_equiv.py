@@ -30,9 +30,9 @@ def generate_graph_structure(dataset_name, seq_length):
         identity = [i for i in range(seq_length)]
         oppositeidentity = [seq_length-1-i for i in range(seq_length)]
         perms = [Permutation(identity), Permutation(oppositeidentity)]
-        for i in range(seq_length-1):
+        for i in range(seq_length):
             my_list = deque(identity)
-            my_list.rotate(1)  # rotate right by 1
+            my_list.rotate(i)  # rotate right by 1
             perms.append(Permutation(list(my_list)))
 
         
@@ -43,13 +43,11 @@ def generate_graph_structure(dataset_name, seq_length):
         mid = seq_length//2
         identity = [i for i in range(seq_length)]    
         perms=[Permutation(identity)]
-        for i in range(1,seq_length):
-            if(i == mid):
+        for i in range(1, seq_length):
+            if i == mid:
                 continue
-            perm = identity
-            temp = perm[i]
-            perm[i] = perm[i-1]
-            perm[i-1] = temp
+            perm = identity.copy()  # or use deepcopy if needed
+            perm[i], perm[i-1] = perm[i-1], perm[i]
             perms.append(Permutation(perm))
         perms.append(Permutation([(i + mid) % seq_length for i in range(seq_length)])) 
         
@@ -60,7 +58,6 @@ def generate_graph_structure(dataset_name, seq_length):
         raise ValueError(f"Unknown dataset {dataset_name}")
     print(len(perms))
     return perms
-
 
 
 def create_datasets():
