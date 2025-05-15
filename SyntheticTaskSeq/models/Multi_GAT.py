@@ -343,7 +343,6 @@ class MultiGraphGATv2Model_inv(nn.Module):
             self.num_categories[struct_id] = num_categories
             self.edge_embedders[struct_id] = EdgeEmbedder(num_categories, embedding_dim=hid_dim)
 
-            # ✅ CHANGE 2: Create token embedder for each structure
             self.token_embedders[struct_id] = TokenEmbedder(vocab_size, hid_dim)
 
             self.output_dims[struct_id] = out_dim
