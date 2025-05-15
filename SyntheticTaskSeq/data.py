@@ -4,6 +4,7 @@ import random
 import string
 import argparse
 from collections import Counter, defaultdict
+from itertools import combinations
 
 
 def set_seed(seed=99):
@@ -109,13 +110,28 @@ class IsPalindromeDataset(Dataset):
                 where_palindrome = [int(seq[i:i+self.palindrome_length] == seq[i:i+self.palindrome_length][::-1])
                     for i in range(self.seq_length - self.palindrome_length + 1)]
 
+                # has_palindrome = any(where_palindrome)
+                # if (not any(label)) and has_palindrome:
+                #     continue  # Regenerate sequence if a palindrome substring exists but isn't labeled
+                # elif any(label): #post processing check on the palindrome label (update for additional larger palindorme)
+                #     for idx, val in enumerate(where_palindrome):
+                #         if val ==1 and idx != start_idx:
+                #             label[idx:(idx + self.palindrome_length)] = [1] * self.palindrome_length
+
+                # after generating where_palindrome
                 has_palindrome = any(where_palindrome)
-                if (not any(label)) and has_palindrome:
-                    continue  # Regenerate sequence if a palindrome substring exists but isn't labeled
-                elif any(label): #post processing check on the palindrome label (update for additional larger palindorme)
+                
+                if not any(label) and has_palindrome:
+                    continue  # Regenerate sequence if unexpected palindrome
+                
+                elif any(label):
+                    # For all detected palindromes, update label accordingly
                     for idx, val in enumerate(where_palindrome):
-                        if val ==1 and idx != start_idx:
-                            label[idx:(idx + self.palindrome_length)] = [1] * self.palindrome_length
+                        if val == 1:
+                            for i in range(self.palindrome_length):
+                                if (idx + i) < self.seq_length:
+                                    label[idx + i] = 1
+
                     
                 seq_tensor = torch.tensor([int(ch) for ch in seq], dtype=torch.float32)
                 label_tensor = torch.tensor(label, dtype=torch.long)
@@ -174,7 +190,7 @@ class IntersectDataset(Dataset):
     - Invariant task: Determine the size of the intersection of set1 and set2
     - Equivariant task: for each element in set1, determine if it is contained in set2, and vice versa 
     '''
-    def __init__(self, num_samples=10000, seq_length=6, seed=42, equivariant=False, vocab_size=4):
+    def __init__(self, num_samples=10000, seq_length=8, seed=42, equivariant=False, vocab_size=4, thresh = 3):
         set_seed(seed)
         assert seq_length % 2 ==0, 'must pass in even sequence length!'
         self.num_samples = num_samples
@@ -182,25 +198,30 @@ class IntersectDataset(Dataset):
         self.set_size = seq_length//2
         self.equiv = equivariant 
         self.vocab = list(string.ascii_lowercase)[:vocab_size]
+        self.thresh = thresh
         self.data = self.generate_data()
+        
     
     def generate_data(self):
         data = []
         
         for _ in range(self.num_samples):
-            set1 = set(random.sample(self.vocab, self.set_size))
-            set2 = set(random.sample(self.vocab, self.set_size))            
-            seq_list = list(set1) + list(set2)
+            set1_list  = [random.choice(self.vocab) for _ in range(self.set_size)]
+            set2_list = [random.choice(self.vocab) for _ in range(self.set_size)]
+            seq_list  = set1_list + set2_list
             mid = len(seq_list) // 2
-            target1 = [1 if ch in set2 else 0 for ch in seq_list[:mid]]
-            target2 = [1 if ch in set1 else 0 for ch in seq_list[mid:]]
+            set1_set = set(set1_list)
+            set2_set = set(set2_list)
+            target1 = [1 if ch in set2_set else 0 for ch in set1_list]
+            target2 = [1 if ch in set1_set else 0 for ch in set2_list]
             target = target1 + target2
             seq_tensor = torch.tensor([ord(ch) for ch in seq_list], dtype=torch.float32)
             seq_tensor = seq_tensor - 97
             if self.equiv:
                 target_tensor = torch.tensor(target, dtype=torch.long)
             else:
-                target_tensor = min(target1.count(1), target2.count(1))
+                target_tensor = len(set1_set & set2_set)
+                #target_tensor = 1 if len(set1 & set2) >= self.thresh else 0
             
             data.append((seq_tensor, target_tensor))
         
@@ -281,9 +302,10 @@ class LongestPalindromeDataset(Dataset):
     Symmetry: invariant to S_n, all permutations of the input
     """
     def __init__(self, num_samples=10000, seq_length=10, seed=42,
-                 vocab_size=20):
+                 vocab_size=20, thresh = 4):
         set_seed(seed)
         self.num_samples = num_samples
+        self.thresh = thresh
         self.seq_length = seq_length
         # default to full lowercase alphabet
         assert 2 <= vocab_size <= 26, "Vocab size must be in reasonable range"
@@ -291,14 +313,15 @@ class LongestPalindromeDataset(Dataset):
         self.token2idx = {ch: i for i, ch in enumerate(self.vocab)}
         pool = self._generate(num_samples*10)
         self.data = self._rebalance(pool)
+        
 
     def _compute_label(self, seq):
         cnt = Counter(seq)
         # sum of even parts
         pair_sum = sum((c // 2) * 2 for c in cnt.values())
         # if any odd leftover, we can put one in the middle
+        #return 1 if (pair_sum + (1 if any(c % 2 for c in cnt.values()) else 0)) >= self.thresh else 0
         return pair_sum + (1 if any(c % 2 for c in cnt.values()) else 0)
-
     def _generate(self, num_samples):
         data = []
         for _ in range(num_samples):
@@ -400,10 +423,155 @@ class DetectCapitalDataset(Dataset):
         return self.data[idx]
 
 
+
+class SetGameDataset(Dataset):
+    '''
+    Generate a dataset for the card game SET.
+    Each sample consists of:
+    - input: 10 cards, each with 4 attributes (each attribute ∈ {0,1,2}), flattened into a vector of size 40
+    - label: length-10 binary vector; label[i]=1 if card i is in some SET among the 10 cards, else 0
+    '''
+    def __init__(self, seq_length = 10, num_samples=30, seed=42):
+        random.seed(seed)
+        torch.manual_seed(seed)
+        self.num_samples = num_samples
+        self.seq_length = seq_length
+        self.data = self.generate_data()
+    
+    def is_set(self, card1, card2, card3):
+        # A set if for each attribute: all same or all different
+        for a, b, c in zip(card1, card2, card3):
+            if (a == b == c) or (len({a, b, c}) == 3):
+                continue
+            else:
+                return False
+        return True
+    def card_to_int(self, card):
+        # Interpret 4-tuple (a,b,c,d) as a base-3 number
+        # a, b, c, d = card
+        # return a * (3**3) + b * (3**2) + c * (3**1) + d * (3**0)
+        a, b, c = card
+        return a * (3**2) + b * (3**1) + c * (3**0) 
+
+    def generate_data(self):
+        #all_cards = [(a,b,c,d) for a in range(3) for b in range(3) for c in range(3) for d in range(3)]
+        all_cards = [(a,b,c) for a in range(3) for b in range(3) for c in range(3)]
+        data = []
+        
+        for _ in range(self.num_samples):
+           
+            cards = random.sample(all_cards, self.seq_length)
+            labels = [0] * self.seq_length  # Initialize labels
+
+            # Check all triplets
+            for i, j, k in combinations(range(self.seq_length), 3):
+                if self.is_set(cards[i], cards[j], cards[k]):
+                    labels[i] = labels[j] = labels[k] = 1
+
+            # Flatten the cards
+            int_cards = [self.card_to_int(card) for card in cards]
+            seq_tensor = torch.tensor(int_cards, dtype=torch.float32)
+            label_tensor = torch.tensor(labels, dtype=torch.long)
+            data.append((seq_tensor, label_tensor))
+        
+        return data
+    
+    def __len__(self):
+        return self.num_samples
+    
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+class SETIntersect(Dataset):
+    '''
+    SETIntersect Dataset:
+    - Two sequences of random SET cards (length seq_length/2 each)
+    - Input: sequence1 + sequence2 (each card hashed to int)
+    - Label:
+        - For each card in sequence1: does it form a SET with two distinct cards from sequence2?
+        - For each card in sequence2: does it form a SET with two distinct cards from sequence1?
+    '''
+    def __init__(self, num_samples=10, seq_length=18, seed=42):
+        assert seq_length % 2 == 0, 'seq_length must be even!'
+        random.seed(seed)
+        torch.manual_seed(seed)
+        self.num_samples = num_samples
+        self.seq_length = seq_length
+        self.subseq_length = seq_length // 2
+        self.data = self.generate_data()
+    
+    def is_set(self, card1, card2, card3):
+        for a, b, c in zip(card1, card2, card3):
+            if (a == b == c) or (len({a, b, c}) == 3):
+                continue
+            else:
+                return False
+        return True
+
+    def card_to_int(self, card):
+        # a, b, c, d = card
+        # return a * (3**3) + b * (3**2) + c * (3**1) + d * (3**0)
+        a, b, c = card
+        return a * (3**2) + b * (3**1) + c * (3**0) 
+
+    def generate_data(self):
+        # all_cards = [(a,b,c,d) for a in range(3) for b in range(3) for c in range(3) for d in range(3)]
+        all_cards = [(a,b,c) for a in range(3) for b in range(3) for c in range(3)]
+        data = []
+        
+        for _ in range(self.num_samples):
+            # Sample sequence1 and sequence2 independently
+            cards_seq1 = random.sample(all_cards, self.subseq_length)
+            cards_seq2 = random.sample(all_cards, self.subseq_length)
+
+            # Final concatenated sequence
+            full_sequence = cards_seq1 + cards_seq2
+
+            labels_seq1 = [0] * self.subseq_length
+            labels_seq2 = [0] * self.subseq_length
+
+            # Labeling for sequence1
+            for idx1, card1 in enumerate(cards_seq1):
+                for j, k in combinations(range(self.subseq_length), 2):
+                    card2 = cards_seq2[j]
+                    card3 = cards_seq2[k]
+                    if self.is_set(card1, card2, card3):
+                        labels_seq1[idx1] = 1
+                        break  # found a SET for this card
+
+            # Labeling for sequence2
+            for idx2, card2 in enumerate(cards_seq2):
+                for j, k in combinations(range(self.subseq_length), 2):
+                    card1 = cards_seq1[j]
+                    card3 = cards_seq1[k]
+                    if self.is_set(card2, card1, card3):
+                        labels_seq2[idx2] = 1
+                        break  # found a SET for this card
+
+            # Merge labels
+            labels = labels_seq1 + labels_seq2
+
+            # Hash the cards
+            int_cards = [self.card_to_int(card) for card in full_sequence]
+
+            seq_tensor = torch.tensor(int_cards, dtype=torch.float32)
+            label_tensor = torch.tensor(labels, dtype=torch.long)
+            data.append((seq_tensor, label_tensor))
+        
+        return data
+
+    def __len__(self):
+        return self.num_samples
+    
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+
+
 # Example usage
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--task', type=str, default='palindrome', choices=['palindrome','balance','intersect', "cyclicsum", "longestpal", "detectcapital"])
+    parser.add_argument('--task', type=str, default='palindrome', choices=['palindrome','balance','intersect', "cyclicsum", "longestpal", "detectcapital", "set", "setintersect"])
 
     parser.add_argument('--num_samples', type=int, default=20)
     parser.add_argument('--seq_length', type=int, default=6)
@@ -413,6 +581,7 @@ def main():
     parser.add_argument('--equiv', action='store_true', help='use equivariant labels (i.e. same size as seq_length)')
     parser.add_argument('--vocab_size', type=int, default=4, help='vocab size for the set intersection (TODO: extend this for all other tasks)')
     parser.add_argument('--seed', type=int, default=9)
+    parser.add_argument('--thresh', type=int, default = 4)
 
     args = parser.parse_args()
 
@@ -426,7 +595,7 @@ def main():
     elif args.task == 'intersect':
         dataset = IntersectDataset(num_samples=args.num_samples, 
                                    seq_length=args.seq_length, seed=args.seed,
-                                   equivariant=args.equiv, vocab_size=args.vocab_size)
+                                   equivariant=args.equiv, vocab_size=args.vocab_size, thresh = args.thresh)
     elif args.task == 'cyclicsum':
         dataset = MaxCyclicSumDataset(num_samples=args.num_samples, 
                                    seq_length=args.seq_length, seed=args.seed,
@@ -435,7 +604,8 @@ def main():
         dataset = LongestPalindromeDataset(
             num_samples=args.num_samples,
             seq_length=args.seq_length,
-            seed=args.seed
+            seed=args.seed,
+            thresh = args.thresh
         )
     elif args.task == 'detectcapital':
         dataset = DetectCapitalDataset(
@@ -443,6 +613,10 @@ def main():
             word_length=args.seq_length,
             seed=args.seed
         )
+    elif args.task == 'set':
+        dataset = SetGameDataset(num_samples = args.num_samples,seed=args.seed, seq_length = args.seq_length)
+    elif args.task == 'setintersect':
+        dataset = SETIntersect(num_samples = args.num_samples, seed = args.seed, seq_length = args.seq_length)
     else:
         raise ValueError("Invalid task")
 
