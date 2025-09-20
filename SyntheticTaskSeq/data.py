@@ -233,6 +233,51 @@ class IntersectDataset(Dataset):
     
     def __getitem__(self, idx):
         return self.data[idx]
+        
+        
+
+
+class Vandermonde(Dataset):
+    '''
+    Dataset that checks the sign of the Vandermonde determinant
+    '''
+    def __init__(self, num_samples=10000, seq_length=8, seed=42, vocab_size=15):
+        set_seed(seed)
+        self.num_samples = num_samples
+        self.seq_length = seq_length
+        self.vocab_size = vocab_size
+        self.data = self.generate_data()
+        
+    def generate_data(self):
+        data = []
+        for _ in range(self.num_samples):
+            # Sample seq_length distinct integers from 1 to vocab_size
+            seq = random.sample(range(1, self.vocab_size + 1), self.seq_length)
+            
+            # Count inversions: number of (i, j) pairs with i < j and seq[i] > seq[j]
+            inversions = 0
+            for i in range(self.seq_length):
+                for j in range(i + 1, self.seq_length):
+                    if seq[i] > seq[j]:
+                        inversions += 1
+
+            # Label: 1 if even number of inversions (positive sign), -1 if odd
+            label = 1 if inversions % 2 == 0 else 0
+
+            seq_tensor = torch.tensor(seq, dtype=torch.float32)
+            label_tensor = torch.tensor(label, dtype=torch.long)
+            data.append((seq_tensor, label_tensor))
+        return data
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+        
+    
+
 
 
 
@@ -248,14 +293,16 @@ class MaxCyclicSumDataset(Dataset):
     sequence = [7, 2, 4, 1, 9, 8], cyc_length=3
     label =    [1, 0, 0, 0, 1, 1]  # because [7, 9, 8] is the unique max-sum cyclic subarray
     '''
-    def __init__(self, num_samples=10000, seq_length=6, cyc_length=3, vocab_size=10, seed=42):
+    def __init__(self, num_samples=10000, seq_length=6, cyc_length=3, vocab_size=10, seed=42, inv = False):
         random.seed(seed)
         torch.manual_seed(seed)
         self.num_samples = num_samples
         self.seq_length = seq_length
         self.cyc_length = cyc_length
         self.vocab_size = vocab_size
+        self.inv = inv
         self.data = self.generate_data()
+        
 
     def generate_data(self):
         data = []
@@ -275,14 +322,19 @@ class MaxCyclicSumDataset(Dataset):
             # Check uniqueness
             if len(window_sums) > 1 and window_sums[0][0] == window_sums[1][0]:
                 continue  # Not unique max sum → regenerate
-
-            # Unique max found
-            label = [0] * self.seq_length
-            for i in range(self.cyc_length):
-                label[(max_start + i) % self.seq_length] = 1
-
-            seq_tensor = torch.tensor(seq, dtype=torch.long)
-            label_tensor = torch.tensor(label, dtype=torch.long)
+            
+            if self.inv:
+                seq_tensor = torch.tensor(seq, dtype=torch.long)
+                label_tensor = torch.tensor([max_sum], dtype=torch.float32)
+            
+            else:
+                # Unique max found
+                label = [0] * self.seq_length
+                for i in range(self.cyc_length):
+                    label[(max_start + i) % self.seq_length] = 1
+    
+                seq_tensor = torch.tensor(seq, dtype=torch.long)
+                label_tensor = torch.tensor(label, dtype=torch.long)
             data.append((seq_tensor, label_tensor))
 
         return data
@@ -571,7 +623,7 @@ class SETIntersect(Dataset):
 # Example usage
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--task', type=str, default='palindrome', choices=['palindrome','balance','intersect', "cyclicsum", "longestpal", "detectcapital", "set", "setintersect"])
+    parser.add_argument('--task', type=str, default='palindrome', choices=['palindrome','balance','intersect', "cyclicsum", "longestpal", "detectcapital", "set", "setintersect", 'vandermonde'])
 
     parser.add_argument('--num_samples', type=int, default=20)
     parser.add_argument('--seq_length', type=int, default=6)
@@ -600,6 +652,10 @@ def main():
         dataset = MaxCyclicSumDataset(num_samples=args.num_samples, 
                                    seq_length=args.seq_length, seed=args.seed,
                                    cyc_length=args.cyc_length, vocab_size = args.vocab_size)
+    elif args.task == 'vandermonde':
+        dataset = Vandermonde(num_samples=args.num_samples, 
+                                   seq_length=args.seq_length, seed=args.seed,
+                                   vocab_size = args.vocab_size)
     elif args.task == 'longestpal':
         dataset = LongestPalindromeDataset(
             num_samples=args.num_samples,
