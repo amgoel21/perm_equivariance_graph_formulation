@@ -182,6 +182,215 @@ class IsPalindromeDataset(Dataset):
         return self.data[idx]
         
 
+# -----------------------------
+# Additional Tasks I: MonotoneRun, ConstantRun (Sequence Reversal Symmetry, similar to Palindrome)
+# -----------------------------
+# ---------- Unified helper: unique-longest run for arbitrary comparators ----------
+def _longest_run_mask(seq, comparators, min_len=1):
+    """
+    Return the mask of the UNIQUE longest contiguous run under ANY of the provided comparators.
+    - comparators: list[tuple[str, Callable[[int,int], bool]]] like [("nondec", le), ("noninc", ge)] or [("equal", eq)]
+    - If there is a tie for the longest run across all comparators, returns (None, False) to signal "regenerate".
+    - If the unique longest has length < min_len, returns (all-zeros, True).
+    - Otherwise returns (mask, True).
+    """
+    a = [int(ch) for ch in seq]
+    n = len(a)
+    if n == 0:
+        return [0]*0, True
+
+    def collect_runs(cmp):
+        runs = []
+        s = 0
+        for i in range(1, n+1):
+            if i == n or not cmp(a[i-1], a[i]):
+                runs.append((s, i))  # half-open [s, i)
+                s = i
+        return runs
+
+    # gather all candidate runs from all comparators
+    cand = []
+    for name, cmp in comparators:
+        for s, e in collect_runs(cmp):
+            cand.append((name, s, e, e - s))
+
+    if not cand:
+        return [0]*n, True
+
+    max_len = max(L for _, _, _, L in cand)
+    tops = [(name, s, e) for (name, s, e, L) in cand if L == max_len]
+
+    # enforce uniqueness
+    if len(tops) != 1:
+        return None, False
+
+    _, s, e = tops[0]
+    if (e - s) < min_len:
+        return [0]*n, True
+
+    mask = [0]*n
+    for j in range(s, e):
+        mask[j] = 1
+    return mask, True
+
+# ---------- small factory for standard modes ----------
+def make_comparators(equal=False, strict=False):
+    """
+    Returns a list of (name, cmp) pairs.
+    - equal=True uses the 'equal' comparator x == y (for constant runs)
+    - strict=False: nondecreasing/nonincreasing use <= and >=
+      strict=True : strictly increasing/decreasing use < and >
+    Notes:
+    - When equal=True, 'strict' is ignored.
+    """
+    if equal:
+        eq = lambda x, y: x == y
+        return [("equal", eq)]
+    else:
+        if strict:
+            le = lambda x, y: x < y
+            ge = lambda x, y: x > y
+        else:
+            le = lambda x, y: x <= y
+            ge = lambda x, y: x >= y
+        return [("nondec", le), ("noninc", ge)]
+
+class MonotoneConstRunDataset(Dataset):
+    '''
+    Datasets for the two tasks: ConstantRun, MonotoneRun
+    Unified dataset:
+      If equal=True  -> ConstantRun (unique-longest)
+      If equal=False -> MonotoneRun (unique-longest; nondec or noninc)
+    Invariant: label=1 iff unique-longest length >= run_length, else 0
+    Equivariant: mask marks ONLY that unique-longest run if length >= run_length, else all-zeros
+    Ties for longest -> regenerate
+    '''
+    def __init__(self, num_samples=10000, seq_length=12, run_length=4, seed=99,
+                 equivariant=True, strict=False, equal=False):
+        set_seed(seed)
+        self.num_samples = num_samples
+        self.seq_length = seq_length
+        self.run_length = run_length
+        self.equivariant = equivariant
+        self.strict = strict
+        self.equal = equal
+        if self.equivariant:
+            self.data = self.generate_equiv_data()
+        else:
+            self.data = self.generate_inv_data()
+
+    def _maybe_insert_block(self, seq):
+        """Insert a positive pattern of EXACT length run_length with prob 0.5.
+        - If self.equal: inserts a constant block
+        - Else:
+            * If self.strict: inserts strictly increasing or strictly decreasing block
+            * Otherwise: inserts nondecreasing or nonincreasing block
+        """
+        if random.random() <= 0.5 or self.run_length > self.seq_length:
+            return False
+
+        start_idx = random.randint(0, self.seq_length - self.run_length)
+
+        if self.equal:
+            # constant block
+            val = random.choice(string.digits)
+            seq[start_idx:start_idx + self.run_length] = [val] * self.run_length
+            return True
+
+        # monotone (strict or non-strict)
+        direction = random.choice(["nondec", "noninc"])
+        block = []
+
+        if direction == "nondec":  # increasing
+            if self.strict:
+                # strictly increasing digits, sample distinct values
+                low = random.randint(0, 9 - self.run_length)
+                block = [str(v) for v in range(low, low + self.run_length)]
+            else:
+                # nondecreasing, may repeat
+                start_val = random.randint(0, 9)
+                for _ in range(self.run_length):
+                    step = 0 if start_val == 9 else random.choice([0, 1])
+                    start_val = min(9, start_val + step)
+                    block.append(str(start_val))
+
+        else:  # "noninc" or strictly decreasing
+            if self.strict:
+                high = random.randint(self.run_length - 1, 9)
+                block = [str(v) for v in range(high, high - self.run_length, -1)]
+            else:
+                start_val = random.randint(0, 9)
+                for _ in range(self.run_length):
+                    step = 0 if start_val == 0 else random.choice([0, -1])
+                    start_val = max(0, start_val + step)
+                    block.append(str(start_val))
+
+        seq[start_idx:start_idx + self.run_length] = block
+        return True
+
+    def _gt_mask_ok(self, seq):
+        """Ground truth unique-longest mask + uniqueness flag."""
+        cmps = make_comparators(equal=self.equal, strict=self.strict)
+        return _longest_run_mask(seq, cmps, min_len=1)
+
+    def generate_equiv_data(self):
+        data = []
+        for _ in range(self.num_samples):
+            while True:
+                seq = [random.choice(string.digits) for _ in range(self.seq_length)]
+                label = [0] * self.seq_length
+                inserted = self._maybe_insert_block(seq)
+
+                mask, ok = self._gt_mask_ok(seq)
+                if not ok:
+                    continue  # tie -> regenerate
+
+                has_long_enough = (sum(mask) >= self.run_length)
+
+                # avoid accidental positives when we didn't insert
+                if (not inserted) and has_long_enough:
+                    continue
+
+                if inserted and has_long_enough:
+                    label = mask[:]
+
+                seq_tensor = torch.tensor([int(ch) for ch in seq], dtype=torch.float32)
+                label_tensor = torch.tensor(label, dtype=torch.long)
+                data.append((seq_tensor, label_tensor))
+                break
+        return data
+
+    def generate_inv_data(self):
+        data = []
+        for _ in range(self.num_samples):
+            while True:
+                seq = [random.choice(string.digits) for _ in range(self.seq_length)]
+                inserted = self._maybe_insert_block(seq)
+
+                mask, ok = self._gt_mask_ok(seq)
+                if not ok:
+                    continue  # tie -> regenerate
+
+                has_long_enough = (sum(mask) >= self.run_length)
+
+                if (not inserted) and has_long_enough:
+                    continue
+
+                label_scalar = 1 if (inserted and has_long_enough) else 0
+                seq_tensor = torch.tensor([int(ch) for ch in seq], dtype=torch.float32)
+                label_tensor = torch.tensor(label_scalar, dtype=torch.long)
+                data.append((seq_tensor, label_tensor))
+                break
+        return data
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+
+
 class IntersectDataset(Dataset):
     '''
     Return dataset for the set intersection task
@@ -236,6 +445,117 @@ class IntersectDataset(Dataset):
         
         
 
+# -----------------------------
+# Additional Tasks II: SymmetricDifference, TargetSum (S_{n/2} x S_{n/2} x S_2 symmetry, similar to Intersect)
+# -----------------------------
+class SymDiffDataset(IntersectDataset):
+    '''
+    Return dataset for the symmetric difference task
+    Input: (set1, set2) concatenated as an input sequence
+    Labels: an integer for the invariant task, or a binary sequence for the equivariant task, where
+    - Invariant task: Determine the size of the symmetric difference of set1 and set2,
+         i.e. |(set1 \cup set2) \ (set1 \cap set2)|
+    - Equivariant task: for each element in set1 or set2, determine if its underlying set element
+         lies in the symmetric difference (i.e. appears in exactly one of the two sets)
+    '''
+    def generate_data(self):
+        data = []
+        
+        for _ in range(self.num_samples):
+            set1_list  = [random.choice(self.vocab) for _ in range(self.set_size)]
+            set2_list = [random.choice(self.vocab) for _ in range(self.set_size)]
+            seq_list  = set1_list + set2_list
+            mid = len(seq_list) // 2
+            set1_set = set(set1_list)
+            set2_set = set(set2_list)
+            target1 = [0 if ch in set2_set else 1 for ch in set1_list]
+            target2 = [0 if ch in set1_set else 1 for ch in set2_list]
+            target = target1 + target2
+            seq_tensor = torch.tensor([ord(ch) for ch in seq_list], dtype=torch.float32)
+            seq_tensor = seq_tensor - 97
+            if self.equiv:
+                target_tensor = torch.tensor(target, dtype=torch.long)
+            else:
+                target_tensor = len(set1_set & set2_set)
+                #target_tensor = 1 if len(set1 & set2) >= self.thresh else 0
+            
+            data.append((seq_tensor, target_tensor))
+        
+        return data
+
+class TargetSumDataset(IntersectDataset):
+    '''
+    Return dataset for the cross-set target-sum task.
+
+    Input: (set1, set2) concatenated as an input sequence of length seq_length,
+           where each half has length set_size = seq_length // 2, and each element
+           is an integer in [0, vocab_size-1] encoded as a character ('a' -> 0, ...).
+
+    Labels:
+    - Invariant task (equivariant=False):
+        An integer equal to the number of pairs (i, j) with
+            set1_list[i] + set2_list[j] == target_sum
+        (counted with multiplicity over positions).
+    - Equivariant task (equivariant=True):
+        A binary sequence of length seq_length:
+            * For indices in set1: 1 iff that element participates in
+              at least one pair with some element from set2 that sums to target_sum.
+            * For indices in set2: 1 iff that element participates in
+              at least one pair with some element from set1 that sums to target_sum.
+    '''
+    def __init__(self, num_samples=10000, seq_length=8, seed=42,
+                 equivariant=False, vocab_size=4, thresh=3, target_sum=3):
+        self.target_sum = target_sum
+        super().__init__(num_samples=num_samples,
+                         seq_length=seq_length,
+                         seed=seed,
+                         equivariant=equivariant,
+                         vocab_size=vocab_size,
+                         thresh=thresh)
+
+    def generate_data(self):
+        data = []
+        T = self.target_sum
+
+        for _ in range(self.num_samples):
+            # generate two "sets" as lists (may have duplicates)
+            set1_list  = [random.choice(self.vocab) for _ in range(self.set_size)]
+            set2_list  = [random.choice(self.vocab) for _ in range(self.set_size)]
+            seq_list   = set1_list + set2_list
+
+            # numeric values 0..vocab_size-1
+            vals1 = [ord(ch) - 97 for ch in set1_list]
+            vals2 = [ord(ch) - 97 for ch in set2_list]
+
+            # equivariant labels: does position participate in ANY pair summing to T?
+            if self.equiv:
+                target1 = [
+                    1 if any(a + b == T for b in vals2) else 0
+                    for a in vals1
+                ]
+                target2 = [
+                    1 if any(a + b == T for a in vals1) else 0
+                    for b in vals2
+                ]
+                target = target1 + target2
+                target_tensor = torch.tensor(target, dtype=torch.long)
+            else:
+                # invariant label: number of (i, j) with vals1[i] + vals2[j] == T
+                count_pairs = 0
+                for a in vals1:
+                    for b in vals2:
+                        if a + b == T:
+                            count_pairs += 1
+                target_tensor = count_pairs  # or torch.tensor(count_pairs, dtype=torch.long)
+
+            # encode input exactly like IntersectDataset
+            seq_tensor = torch.tensor([ord(ch) for ch in seq_list], dtype=torch.float32)
+            seq_tensor = seq_tensor - 97.0  # map 'a' -> 0.0, etc.
+
+            data.append((seq_tensor, target_tensor))
+
+        return data
+
 
 class Vandermonde(Dataset):
     '''
@@ -274,11 +594,6 @@ class Vandermonde(Dataset):
 
     def __getitem__(self, idx):
         return self.data[idx]
-
-        
-    
-
-
 
 
 
@@ -344,6 +659,130 @@ class MaxCyclicSumDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.data[idx]
+
+# -----------------------------
+# Additional Tasks III: MaxCyclicProduct,  (cyclic shift symmetry, similar to MaxCyclicSum)
+# -----------------------------
+
+class MaxCyclicProductDataset(MaxCyclicSumDataset):
+    '''
+    Dataset for finding the unique contiguous (including cyclic wraparound) subsequence
+    of a specified length (cyc_length) with the maximum product.
+
+    Each element in the sequence is an integer in the range [0, vocab_size - 1].
+
+    Example:
+    sequence = [1, 2, 3, 0, 4, 5], cyc_length=2
+    products over cyclic windows of length 2:
+      [1*2, 2*3, 3*0, 0*4, 4*5, 5*1] = [2, 6, 0, 0, 20, 5]
+    unique max product = 20 at window [4,5]
+    label = [0, 0, 0, 0, 1, 1]
+    '''
+    def generate_data(self):
+        data = []
+        while len(data) < self.num_samples:
+            seq = [random.randint(0, self.vocab_size - 1) for _ in range(self.seq_length)]
+
+            # Create a doubled version for wraparound
+            doubled_seq = seq + seq[:self.cyc_length - 1]
+            window_vals = []
+
+            for i in range(self.seq_length):
+                prod = 1
+                for k in range(self.cyc_length):
+                    prod *= doubled_seq[i + k]
+                window_vals.append((prod, i))
+
+            # Sort by descending product
+            window_vals.sort(reverse=True)
+            max_prod, max_start = window_vals[0]
+
+            # Check uniqueness of maximum product
+            if len(window_vals) > 1 and window_vals[0][0] == window_vals[1][0]:
+                continue  # Not unique max product → regenerate
+
+            seq_tensor = torch.tensor(seq, dtype=torch.long)
+
+            if self.inv:
+                # invariant label: max product value
+                label_tensor = torch.tensor([max_prod], dtype=torch.float32)
+            else:
+                # equivariant label: mask for the unique max-product cyclic window
+                label = [0] * self.seq_length
+                for k in range(self.cyc_length):
+                    label[(max_start + k) % self.seq_length] = 1
+                label_tensor = torch.tensor(label, dtype=torch.long)
+
+            data.append((seq_tensor, label_tensor))
+
+        return data
+
+class MaxCyclicAlterSumDataset(MaxCyclicSumDataset):
+    '''
+    Dataset for finding the unique contiguous (including cyclic wraparound) subsequence
+    of a specified length (cyc_length) with the maximum alternating sum.
+
+    Alternating sum for a window of length L starting at i is:
+       + x[i] - x[i+1] + x[i+2] - x[i+3] + ... (mod seq_length)
+
+    Each element in the sequence is an integer in the range [0, vocab_size - 1].
+
+    Example:
+    sequence = [7, 2, 4, 1, 9, 8], cyc_length=3
+    windows (cyclic) and alternating sums:
+      [7,2,4]   -> 7 - 2 + 4 = 9
+      [2,4,1]   -> 2 - 4 + 1 = -1
+      [4,1,9]   -> 4 - 1 + 9 = 12
+      [1,9,8]   -> 1 - 9 + 8 = 0
+      [9,8,7]   -> 9 - 8 + 7 = 8
+      [8,7,2]   -> 8 - 7 + 2 = 3
+    unique max alternating sum = 12 at window [4,1,9], starting at index 2
+    label = [0, 0, 1, 1, 1, 0]
+    '''
+    def generate_data(self):
+        data = []
+        while len(data) < self.num_samples:
+            seq = [random.randint(0, self.vocab_size - 1) for _ in range(self.seq_length)]
+
+            # Create a doubled version for wraparound
+            doubled_seq = seq + seq[:self.cyc_length - 1]
+            window_vals = []
+
+            for i in range(self.seq_length):
+                alt_sum = 0
+                for k in range(self.cyc_length):
+                    val = doubled_seq[i + k]
+                    if k % 2 == 0:   # even offset: +
+                        alt_sum += val
+                    else:            # odd offset: -
+                        alt_sum -= val
+                window_vals.append((alt_sum, i))
+
+            # Sort by descending alternating sum
+            window_vals.sort(reverse=True)
+            max_alt, max_start = window_vals[0]
+
+            # Check uniqueness of maximum alternating sum
+            if len(window_vals) > 1 and window_vals[0][0] == window_vals[1][0]:
+                continue  # Not unique max → regenerate
+
+            seq_tensor = torch.tensor(seq, dtype=torch.long)
+
+            if self.inv:
+                # invariant label: max alternating sum value
+                label_tensor = torch.tensor([max_alt], dtype=torch.float32)
+            else:
+                # equivariant label: mask for the unique max-alt-sum cyclic window
+                label = [0] * self.seq_length
+                for k in range(self.cyc_length):
+                    label[(max_start + k) % self.seq_length] = 1
+                label_tensor = torch.tensor(label, dtype=torch.long)
+
+            data.append((seq_tensor, label_tensor))
+
+        return data
+
+
 
 class LongestPalindromeDataset(Dataset):
     """
