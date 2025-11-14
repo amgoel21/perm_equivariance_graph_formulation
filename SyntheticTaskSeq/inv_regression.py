@@ -19,16 +19,11 @@ def generate_graph_structure(dataset_name, seq_length):
     """
     Creates adjacency matrices and orbit mappings for different dataset structures.
     """
-    # identity = [i for i in range(seq_length)]    
-    # perms=[Permutation(identity)]
-    # return perms
-
-
-    
 
     if dataset_name == "palindrome":
         # Mirror adjacency (Characters linked to their mirrored counterparts)
         perms = [Permutation([i for i in range(seq_length)]), Permutation([seq_length - i - 1 for i in range(seq_length)])]
+        #perms = [Permutation([i for i in range(seq_length)])]
     elif dataset_name == "cyclicsum" or dataset_name == 'cyclicsum2' or dataset_name == 'cyclicsum3':
             identity = [i for i in range(seq_length)]
             perms = [Permutation(identity)]
@@ -73,12 +68,21 @@ def generate_graph_structure(dataset_name, seq_length):
     elif dataset_name == 'vandermonde':
         identity = list(range(seq_length))
         perms = []
+        # Generate both (i j k) and (i k j) for i < j < k
+        for i in range(seq_length - 2):
+            for j in range(i + 1, seq_length - 1):
+                for k in range(j + 1, seq_length):
+                    # 3-cycle: (i j k)
+                    perm1 = identity.copy()
+                    perm1[i], perm1[j], perm1[k] = identity[j], identity[k], identity[i]
+                    perms.append(Permutation(perm1))
+    
+                    # 3-cycle: (i k j)
+                    perm2 = identity.copy()
+                    perm2[i], perm2[j], perm2[k] = identity[k], identity[i], identity[j]
+                    perms.append(Permutation(perm2))
         perms.append(Permutation(identity))
 
-                    
-                
-        
-    
 
     else:
         raise ValueError(f"Unknown dataset {dataset_name}")
@@ -104,14 +108,16 @@ def create_datasets():
     #structures = ['vandermonde']
     #structures = [  'cyclicsum', 'intersect']
     #structures = [ 'longestpal', 'detectcapital']
-    total_samples = 16000
+    total_samples = 6000
+    LENGTH_OF_SEQUENCE = 8
+    print(LENGTH_OF_SEQUENCE)
     print(total_samples)
     
 
     for structure_id in structures:
         print(structure_id)
         if structure_id == "palindrome":
-            seq_length = 8
+            seq_length = LENGTH_OF_SEQUENCE
             dataset = IsPalindromeDataset(num_samples=total_samples, seq_length=seq_length, palindrome_length=4,equivariant=False)
             graph_configs[structure_id] = {
             "n_nodes": seq_length,
@@ -123,7 +129,7 @@ def create_datasets():
             "out_dim": 2
         }
         elif structure_id == "intersect":
-            seq_length = 8
+            seq_length = LENGTH_OF_SEQUENCE
             dataset = IntersectDataset(num_samples=total_samples, seq_length=seq_length, vocab_size=10,equivariant=False, thresh = 4)
             graph_configs[structure_id] = {
             "n_nodes": seq_length,
@@ -135,7 +141,7 @@ def create_datasets():
             "out_dim": 1+seq_length
         }
         elif structure_id == "cyclicsum":
-            seq_length = 8
+            seq_length = LENGTH_OF_SEQUENCE
             dataset = MaxCyclicSumDataset(num_samples=total_samples, seq_length=seq_length, cyc_length = 4, vocab_size=10, inv = True)
             graph_configs[structure_id] = {
             "n_nodes": seq_length,
@@ -146,32 +152,8 @@ def create_datasets():
             "sparse": False,
             "out_dim": seq_length * 4
         }
-        elif structure_id == "cyclicsum2":
-            seq_length = 8
-            dataset = MaxCyclicSumDataset(num_samples=total_samples, seq_length=seq_length, cyc_length = 3, vocab_size=10, inv = True)
-            graph_configs[structure_id] = {
-            "n_nodes": seq_length,
-            "perms": generate_graph_structure("cyclicsum", seq_length),
-            "coords_dim": (1,1),
-            "adj": None,
-            "orbits": None,
-            "sparse": False,
-            "out_dim": seq_length * 3
-        }
-        elif structure_id == "cyclicsum3":
-            seq_length = 8
-            dataset = MaxCyclicSumDataset(num_samples=total_samples, seq_length=seq_length, cyc_length = 5, vocab_size=10, inv = True)
-            graph_configs[structure_id] = {
-            "n_nodes": seq_length,
-            "perms": generate_graph_structure("cyclicsum", seq_length),
-            "coords_dim": (1,1),
-            "adj": None,
-            "orbits": None,
-            "sparse": False,
-            "out_dim": seq_length * 5
-        }
         elif structure_id == "longestpal":
-            seq_length = 8
+            seq_length = LENGTH_OF_SEQUENCE
             dataset = LongestPalindromeDataset(num_samples=total_samples, seq_length=seq_length, vocab_size=10, thresh = 5)
             graph_configs[structure_id] = {
             "n_nodes": seq_length,
@@ -183,7 +165,7 @@ def create_datasets():
             "out_dim": 1+seq_length
         }
         elif structure_id == "detectcapital":
-            seq_length = 8
+            seq_length = LENGTH_OF_SEQUENCE
             dataset = DetectCapitalDataset(num_samples=total_samples, word_length=seq_length)
             graph_configs[structure_id] = {
             "n_nodes": seq_length,
@@ -196,7 +178,7 @@ def create_datasets():
         }
         
         elif structure_id == "vandermonde":
-            seq_length = 8
+            seq_length = LENGTH_OF_SEQUENCE
             dataset = Vandermonde(num_samples=total_samples, seq_length=seq_length, vocab_size = 10)
             graph_configs[structure_id] = {
             "n_nodes": seq_length,
@@ -226,20 +208,38 @@ def create_datasets():
 
 
 def run_experiments_inv():
-    """Multi_task training on invariant tasks with regression. Must preset settings and num datasets"""
     import matplotlib.pyplot as plt
     import numpy as np
 
     graph_configs, train_datasets, val_datasets, test_datasets = create_datasets()
     all_structures = list(train_datasets.keys())
-    assert len(all_structures) == 4, "Expected exactly four structures."
+    k = len(all_structures)
+    if k == 0:
+        raise ValueError("No structures found in train_datasets; all_structures is empty.")
 
+    # Use the *smallest* dataset size as the base (as in your original code)
     base_size = min(len(train_datasets[s]) for s in all_structures)
 
+    # Example: must be length k each
+    settings = [[0, 0, 0, 1]]  # <- will error if k != 4
 
-    
-    settings = [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]
+    # --- Validate settings shape ---
+    if len(settings) == 0:
+        raise ValueError("settings must contain at least one list/tuple of mixing fractions.")
 
+    expected_len = k
+    first_len = len(settings[0])
+    if first_len != expected_len:
+        raise ValueError(
+            f"Each element of settings must have length {expected_len}, "
+            f"but settings[0] has length {first_len}."
+        )
+
+    for i, setting in enumerate(settings):
+        if len(setting) != expected_len:
+            raise ValueError(
+                f"settings[{i}] has length {len(setting)}, but expected {expected_len}."
+            )
 
     def collate_fn(batch):
         xs = torch.stack([item[0] for item in batch])  # (B, N, 1)
@@ -247,7 +247,7 @@ def run_experiments_inv():
         struct_ids = [item[2] for item in batch]
         return xs, ys, struct_ids
 
-    # NEW: weighted L1 helper (same idea as pretrain/finetune)
+    # Weighted L1 helper (same as before, just untouched)
     def weighted_l1(preds, targets, struct_ids, graph_configs):
         abs_err = (preds - targets).abs()  # (B,1)
         inv_ranges = torch.tensor(
@@ -257,28 +257,42 @@ def run_experiments_inv():
         return (abs_err * inv_ranges).mean()
 
     for setting in settings:
-        print(f"\nRunning setting: {setting}")
+        mix_str = " + ".join(f"{frac} {struct}" for frac, struct in zip(setting, all_structures))
+        print(f"\nRunning setting: {mix_str}")
+
         trial_losses = {s: [] for s in all_structures}
 
-        for trial in range(3):
-            subsets = []
+        for trial in range(2):
+            # Build training subsets according to fractions
+            combined_train = []
             for frac, struct in zip(setting, all_structures):
                 n = int(base_size * frac)
                 if n > 0:
-                    subsets += random.sample(list(train_datasets[struct]), n)
-            random.shuffle(subsets)
+                    combined_train += random.sample(list(train_datasets[struct]), n)
 
-            train_loader = DataLoader(subsets, batch_size=64, shuffle=True, collate_fn=collate_fn)
-            val_loaders = { s: DataLoader(val_datasets[s], batch_size=64, shuffle=False, collate_fn=collate_fn)
-                            for s in all_structures }
+            random.shuffle(combined_train)
+
+            train_loader = DataLoader(
+                combined_train, batch_size=64, shuffle=True, collate_fn=collate_fn
+            )
+            val_loaders = {
+                s: DataLoader(
+                    val_datasets[s], batch_size=64, shuffle=False, collate_fn=collate_fn
+                )
+                for s in all_structures
+            }
 
             model = MultiGraphGATv2Model_inv(
                 graph_configs, hid_dim=40, num_layers=3, p_dropout=0.1, vocab_size=53
             ).to(device)
             optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
-            num_epochs = 80
+            num_epochs = 40
             val_epoch_losses = {s: [] for s in all_structures}
+
+            # Build a general tag string for the mix
+            setting_str = "-".join(str(f) for f in setting)
+
 
             for epoch in range(num_epochs):
                 model.train()
@@ -297,7 +311,7 @@ def run_experiments_inv():
                 avg_train_loss = total_loss / max(1, len(train_loader))
                 print(f"Trial {trial+1}, Epoch {epoch+1}: Train wL1 = {avg_train_loss:.4f}")
 
-                # Validation (also weighted for consistency across tasks)
+                # Validation
                 model.eval()
                 with torch.no_grad():
                     for struct in all_structures:
@@ -319,11 +333,13 @@ def run_experiments_inv():
             for struct in all_structures:
                 print(f"  {struct}: {val_epoch_losses[struct]}")
 
-            # Test (same weighted L1 to reflect the normalized scale across tasks)
+            # Test
             model.eval()
             with torch.no_grad():
                 for s in all_structures:
-                    test_loader = DataLoader(test_datasets[s], batch_size=64, shuffle=False, collate_fn=collate_fn)
+                    test_loader = DataLoader(
+                        test_datasets[s], batch_size=64, shuffle=False, collate_fn=collate_fn
+                    )
                     test_loss = 0.0
                     num_batches = 0
                     for x_batch, y_batch, struct_ids in test_loader:
@@ -341,10 +357,7 @@ def run_experiments_inv():
             print(f"    {s}: {np.mean(trial_losses[s]):.4f}")
 
 
-
-
 def run_pretrain_finetune_experiment():
-    """Create pretrained model from all, but last datasets from create_datasets. Finetunes on last dataset with invariant tasks with regression loss"""
     import numpy as np
 
     graph_configs, train_datasets, val_datasets, test_datasets = create_datasets()
@@ -390,7 +403,7 @@ def run_pretrain_finetune_experiment():
     for experiment_type in ["pretrain+finetune", "finetune_only"]:
         print(f"\n====== Starting Experiment: {experiment_type} ======")
 
-        for trial in range(4):
+        for trial in range(3):
             print(f"\n--- Trial {trial+1} ---")
 
             model = MultiGraphGATv2Model_inv(
@@ -478,7 +491,22 @@ def run_pretrain_finetune_experiment():
                     val_losses.append(avg_val_loss)
                     print(f"    Finetune Epoch {epoch+1}: Val L1 = {avg_val_loss:.4f}")
 
-
+            # # === Test Phase (UNSCALED L1) ===
+            # model.eval()
+            # with torch.no_grad():
+            #     test_loss = 0.0
+            #     num_batches = 0
+            #     for x_batch, y_batch, struct_ids in test_loader:
+            #         x_batch, y_batch = x_batch.to(device), y_batch.to(device)
+            #         preds = model(x_batch, struct_ids)  # (B,1)
+            #         loss = l1_mean(preds, y_batch)
+            #         test_loss += loss.item()
+            #         num_batches += 1
+            #     avg_test_loss = test_loss / max(1, num_batches)
+            #     print(f"  Test L1: {avg_test_loss:.4f}")
+            #     results[experiment_type].append(avg_test_loss)
+            # === Test Phase (UNSCALED L1) ===
+            
             model.eval()
             with torch.no_grad():
                 test_loss = 0.0
@@ -530,7 +558,6 @@ def run_pretrain_finetune_experiment():
 
 
 def run_vandermonde_mlp():
-    """Vandermonde tests, not for general invariance tests"""
     num_trials = 3
     num_epochs = 50
     batch_size = 64
