@@ -8,6 +8,7 @@ import numpy as np
 from sympy import *
 from sympy.combinatorics import Permutation, PermutationGroup
 from random import randrange
+import math
 
 
 class EdgeEmbedder(nn.Module):
@@ -20,6 +21,7 @@ class EdgeEmbedder(nn.Module):
         """
         super(EdgeEmbedder, self).__init__()
         self.embedding = nn.Embedding(num_categories, embedding_dim, max_norm=None)
+        # nn.init.kaiming_uniform_(self.embedding.weight, a=0.3)
 
     def forward(self, category_indices):
         """
@@ -330,7 +332,8 @@ class MultiGraphGATv2Model_inv(nn.Module):
         self.edge_indices = {}
         self.num_categories= {}
         self.edge_categories = {}
-        self.edge_embedders = {}
+        # self.edge_embedders = {}
+        self.edge_embedders = nn.ModuleDict()
         self.output_dims = {}
 
         for struct_id, config in graph_configs.items():
@@ -343,20 +346,29 @@ class MultiGraphGATv2Model_inv(nn.Module):
             self.num_categories[struct_id] = num_categories
             self.edge_embedders[struct_id] = EdgeEmbedder(num_categories, embedding_dim=hid_dim)
 
+            
             self.token_embedders[struct_id] = TokenEmbedder(vocab_size, hid_dim)
 
             self.output_dims[struct_id] = out_dim
 
         self.max_output_dim = max(self.output_dims.values())
 
+        # self.input_mlp = nn.Sequential(
+        #     nn.Linear(1, hid_dim),
+        #     nn.LayerNorm(hid_dim),
+        #     nn.ReLU(),
+        #     nn.Linear(hid_dim, hid_dim),
+        #     nn.LayerNorm(hid_dim)
+        # )
+        
         self.input_mlp = nn.Sequential(
+            nn.Linear(1, hid_dim),
             nn.LayerNorm(hid_dim),
-            nn.ReLU(),
-            nn.Linear(hid_dim, hid_dim),
-            nn.LayerNorm(hid_dim)
+            nn.ReLU()
         )
 
-        self.output_layer = nn.Linear(hid_dim, self.max_output_dim)
+        # self.output_layer = nn.Linear(hid_dim, self.max_output_dim)
+        self.output_layer = nn.Linear(hid_dim, 1)
 
         self.conv_layers = nn.ModuleList([
             GATv2Conv(hid_dim, self.shared_head_dim, edge_dim=hid_dim, heads=self.shared_num_heads, concat=True)
@@ -384,9 +396,13 @@ class MultiGraphGATv2Model_inv(nn.Module):
     
             edge_feat = edge_embedder(self.edge_categories[struct_id].to(device)).unsqueeze(0)
             node_indices = x[i].squeeze(-1).long()  # (num_nodes,)
-            h = token_embedder(node_indices.unsqueeze(0))
-            h = self.input_mlp(h)
+            h = self.input_mlp(node_indices.unsqueeze(-1).float())
+            # h = token_embedder(node_indices.unsqueeze(0))
+            # h = self.input_mlp(h)
             h = h.squeeze(0)
+            # h = token_embedder(node_indices.unsqueeze(0))  # (1, num_nodes, hid_dim)
+            # h = self.input_mlp(h)  # (1, num_nodes, hid_dim)
+            # h = h.squeeze(0)
             edge_feat = edge_feat.squeeze(0)
     
             for conv, ln, proj in zip(self.conv_layers, self.layer_norms, self.projection_layers):
@@ -406,6 +422,96 @@ class MultiGraphGATv2Model_inv(nn.Module):
             outputs.append(out)
     
         return torch.cat(outputs, dim=0)  # (batch_size, max_output_dim)
+    @torch.no_grad()
+    def edge_features_for_pairs(self, structure_id: str, pairs: torch.LongTensor):
+        """
+        Return learned edge embeddings for each (i,j) in `pairs` for the given structure.
+    
+        Args:
+            structure_id: key in self.graph_configs / self.edge_* dicts
+            pairs: LongTensor [N,2] of node index pairs (ordered; may include self-pairs)
+    
+        Returns:
+            Dict[str, Tensor]: {"edge": Tensor [N, hid_dim]}
+        """
+        device = next(self.parameters()).device
+        edge_index = self.edge_indices[structure_id].to(device)        # [2, E]
+        edge_cats  = self.edge_categories[structure_id].to(device)     # [E]
+        embedder   = self.edge_embedders[structure_id].to(device)      # nn.Embedding or wrapper
+    
+        # Build (i,j) -> category id map
+        edge_map = { (int(edge_index[0, e]), int(edge_index[1, e])): int(edge_cats[e])
+                     for e in range(edge_index.size(1)) }
+    
+        rows = []
+        for i, j in pairs.tolist():
+            if (i, j) in edge_map:
+                cat = edge_map[(i, j)]
+                rows.append(embedder(torch.tensor([cat], device=device)).squeeze(0))
+            else:
+                # If the directed edge (i,j) is not present, emit a zero vector
+                rows.append(torch.zeros(self.hid_dim, device=device))
+    
+        feats = torch.stack(rows, dim=0)  # [N, hid_dim]
+        return {"edge": feats}
+    @torch.no_grad()
+    def dump_edge_features(self, out_dir: str, tag: str = "", structures: list = None, include_all_pairs: bool = True):
+        # Local imports so this works even if the module forgot them
+        import os, json
+        import numpy as np
+        import torch
+    
+        os.makedirs(out_dir, exist_ok=True)
+        device = next(self.parameters()).device
+        structures = list(self.graph_configs.keys()) if structures is None else structures
+    
+        for struct_id in structures:
+            cfg = self.graph_configs[struct_id]
+            n_nodes = int(cfg["n_nodes"] if isinstance(cfg, dict) else cfg.n_nodes)
+    
+            if include_all_pairs:
+                I, J = torch.meshgrid(
+                    torch.arange(n_nodes, device=device),
+                    torch.arange(n_nodes, device=device),
+                    indexing="ij",
+                )
+                pairs = torch.stack([I.reshape(-1), J.reshape(-1)], dim=-1)  # [N,2]
+            else:
+                pairs = self.edge_indices[struct_id].to(device).t()  # [E,2]
+    
+            feat_dict = self.edge_features_for_pairs(struct_id, pairs)  # {"edge": [N, hid_dim]}
+            if isinstance(feat_dict, torch.Tensor):
+                feat_dict = {"edge": feat_dict}
+    
+            np_pairs = pairs.detach().cpu().numpy()
+            save_dict = {"pairs": np_pairs}
+            layer_names = []
+            for k, v in feat_dict.items():
+                layer_names.append(k)
+                save_dict[k] = v.detach().cpu().numpy()
+    
+            tag_sfx = f"__{tag}" if tag else ""
+            base = os.path.join(out_dir, f"edge_feats__{struct_id}{tag_sfx}")
+    
+            np.savez_compressed(base + ".npz", **save_dict)
+            with open(base + ".meta.json", "w") as f:
+                json.dump(
+                    {
+                        "structure": struct_id,
+                        "n_nodes": n_nodes,
+                        "num_pairs": int(np_pairs.shape[0]),
+                        "layers": layer_names,
+                        "arrays": list(save_dict.keys()),
+                        "all_pairs": bool(include_all_pairs),
+                    },
+                    f,
+                    indent=2,
+                )
+    
+            print(f"[dump_edge_features(inv)] wrote {base}.npz (pairs={np_pairs.shape[0]}, layers={layer_names})")
+
+    
+
 
 
 
@@ -428,7 +534,8 @@ class MultiGraphGATv2Model_equiv(nn.Module):
         self.edge_indices = {}
         self.num_categories= {}
         self.edge_categories = {}
-        self.edge_embedders = {}
+        # self.edge_embedders = {}
+        self.edge_embedders = nn.ModuleDict()
         self.output_dims = {}
 
         for struct_id, config in graph_configs.items():
@@ -480,6 +587,7 @@ class MultiGraphGATv2Model_equiv(nn.Module):
             node_indices = x[i].squeeze(-1).long()  # (num_nodes,)
             h = token_embedder(node_indices.unsqueeze(0))  # (1, num_nodes, hid_dim)
             h = self.input_mlp(h)  # (1, num_nodes, hid_dim)
+            # h = self.input_mlp(node_indices.unsqueeze(-1).float())
     
             h = h.squeeze(0)  # (num_nodes, hid_dim)
             edge_feat = edge_feat.squeeze(0)  # (num_edges, hid_dim)
@@ -500,13 +608,172 @@ class MultiGraphGATv2Model_equiv(nn.Module):
     
         return torch.cat(outputs, dim=0)  # (batch_size, num_nodes, out_dim)
     
+    @torch.no_grad()
+    def edge_features_for_pairs(self, structure_id: str, pairs: torch.LongTensor):
+        """
+        Return learned edge embeddings for each (i,j) in `pairs` for the given structure.
     
+        Args:
+            structure_id: key in self.graph_configs / self.edge_* dicts
+            pairs: LongTensor [N,2] of node index pairs (ordered; includes self-pairs if you pass them)
     
+        Returns:
+            Dict[str, Tensor]: {"edge": Tensor [N, hid_dim]}
+        """
+        import torch
+        device = next(self.parameters()).device if any(True for _ in self.parameters()) else torch.device("cpu")
     
+        edge_index = self.edge_indices[structure_id].to(device)        # [2, E]
+        edge_cats  = self.edge_categories[structure_id].to(device)     # [E]
+        embedder   = self.edge_embedders[structure_id].to(device)      # nn.Embedding or wrapper
     
+        # Build (i,j) -> category id lookup
+        edge_map = { (int(edge_index[0, e]), int(edge_index[1, e])): int(edge_cats[e])
+                     for e in range(edge_index.size(1)) }
     
+        # For each requested (i,j), embed if present; else zero vector
+        feat_rows = []
+        for i, j in pairs.tolist():
+            if (i, j) in edge_map:
+                cat = edge_map[(i, j)]
+                feat_rows.append(embedder(torch.tensor([cat], device=device)).squeeze(0))
+            else:
+                feat_rows.append(torch.zeros(self.hid_dim, device=device))
+    
+        feats = torch.stack(feat_rows, dim=0)  # [N, hid_dim]
+        return {"edge": feats}
+    @torch.no_grad()
+    def dump_edge_features(self, out_dir: str, tag: str = "", structures: list = None, include_all_pairs: bool = True):
+        """
+        Dump edge features to disk for each dataset/structure in this model.
+    
+        Writes, per structure:
+          out_dir/
+            edge_feats__{structure}__{tag}.npz        (arrays: pairs [N,2], edge [N,hid_dim])
+            edge_feats__{structure}__{tag}.meta.json  (small metadata JSON)
+    
+        Args:
+            out_dir: directory to write files into
+            tag: optional suffix to distinguish runs (e.g., 'multitask__mix=...' or 'trial=1')
+            structures: optional subset list of structure_ids to dump; default = all
+            include_all_pairs: if True, dumps ALL ordered (i,j) pairs (including self-edges).
+                               If False, dumps only the edges present in self.edge_indices[struct].
+        """
+        import os, json
+        import numpy as np
+        import torch
+    
+        os.makedirs(out_dir, exist_ok=True)
+        device = next(self.parameters()).device if any(True for _ in self.parameters()) else torch.device("cpu")
+        structures = list(self.graph_configs.keys()) if structures is None else structures
+    
+        for struct_id in structures:
+            cfg = self.graph_configs[struct_id]
+            # support dict configs
+            n_nodes = int(cfg["n_nodes"] if isinstance(cfg, dict) else cfg.n_nodes)
+    
+            if include_all_pairs:
+                I, J = torch.meshgrid(
+                    torch.arange(n_nodes, device=device),
+                    torch.arange(n_nodes, device=device),
+                    indexing="ij",
+                )
+                pairs = torch.stack([I.reshape(-1), J.reshape(-1)], dim=-1)  # [N,2] for all (i,j)
+            else:
+                # only the model's defined directed edges
+                ei = self.edge_indices[struct_id].to(device)  # [2, E]
+                pairs = ei.t()  # [E, 2]
+    
+            feat_dict = self.edge_features_for_pairs(struct_id, pairs)  # {"edge": [N, hid_dim]} or similar
+    
+            # normalize to dict[str->tensor]
+            if isinstance(feat_dict, torch.Tensor):
+                feat_dict = {"edge": feat_dict}
+    
+            np_pairs = pairs.detach().cpu().numpy()
+            save_dict = {"pairs": np_pairs}
+            layer_names = []
+            for k, v in feat_dict.items():
+                layer_names.append(k)
+                save_dict[k] = v.detach().cpu().numpy()
+    
+            tag_sfx = f"__{tag}" if tag else ""
+            base = os.path.join(out_dir, f"edge_feats__{struct_id}{tag_sfx}")
+    
+            # save arrays
+            np.savez_compressed(base + ".npz", **save_dict)
+            # save metadata
+            with open(base + ".meta.json", "w") as f:
+                json.dump(
+                    {
+                        "structure": struct_id,
+                        "n_nodes": n_nodes,
+                        "num_pairs": int(np_pairs.shape[0]),
+                        "layers": layer_names,
+                        "arrays": list(save_dict.keys()),
+                        "all_pairs": bool(include_all_pairs),
+                    },
+                    f,
+                    indent=2,
+                )
+    
+            print(f"[dump_edge_features] wrote {base}.npz  (pairs={np_pairs.shape[0]}, layers={layer_names})")
 
 
+
+
+        
+        
+
+
+
+class PermutationMLP(nn.Module):
+    """
+    Pipeline:
+      x: (B, L, 1) →
+        per-node Linear(1→H), ReLU → (B, L, H)
+        token-mixing Linear over positions L→L (channel-wise) → (B, L, H)
+        per-node Linear(H→2) → (B, L, 2)
+        sum over positions → (B, 2)
+    """
+    def __init__(self, seq_length: int, hidden_dim: int = 128):
+        super().__init__()
+        self.seq_length = seq_length
+        self.hidden_dim = hidden_dim
+
+        # Per-node feature lift: 1 → H
+        self.in_proj = nn.Linear(1, hidden_dim)
+
+        # Token-mixing across positions: L → L (applied channel-wise)
+        # We apply this to the "positions" dimension; no bias needed.
+        self.token_mixer = nn.Linear(seq_length, seq_length, bias=False)
+
+        # Per-node head: H → 2
+        self.out_proj = nn.Linear(hidden_dim, 2)
+
+        self.act = nn.ReLU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Accept (B, L) or (B, L, 1)
+        if x.dim() == 2:
+            x = x.unsqueeze(-1)  # (B, L, 1)
+        assert x.dim() == 3 and x.size(-1) == 1, f"Expected (B, L, 1), got {x.shape}"
+        assert x.size(1) == self.seq_length, f"Expected seq_length={self.seq_length}, got {x.size(1)}"
+
+        # Per-node lift
+        z = self.act(self.in_proj(x))          # (B, L, H)
+
+        # Token mixing across positions: apply Linear(L→L) per feature channel
+        # Move L to last dim, mix, then move back
+        z = z.transpose(1, 2)                  # (B, H, L)
+        z = self.token_mixer(z) 
+        z = self.act(z)
+        z = z.transpose(1, 2)                  # (B, L, H)
+
+        # Per-node logits and sum over positions
+        per_pos_logits = self.out_proj(z)      # (B, L, 2)
+        logits = per_pos_logits.sum(dim=1)     # (B, 2)
+        return logits
 
 
 
