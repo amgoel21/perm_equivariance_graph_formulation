@@ -101,15 +101,10 @@ def create_datasets():
     test_data={}
     val_data={}
 
-    structures = ['longestpal','palindrome','detectcapital','intersect']
-    #structures = ['cyclicsum3', 'cyclicsum']
-    #structures = ['intersect','palindrome','cyclicsum']
-    # structures = ['palindrome','detectcapital', "vandermonde"]
-    #structures = ['vandermonde']
-    #structures = [  'cyclicsum', 'intersect']
-    #structures = [ 'longestpal', 'detectcapital']
-    total_samples = 6000
-    LENGTH_OF_SEQUENCE = 8
+    #structures = ['longestpal','palindrome','intersect','detectcapital']
+    structures = ['longestpal','detectcapital','intersect' ,'palindrome']
+    total_samples = 4000
+    LENGTH_OF_SEQUENCE = 6
     print(LENGTH_OF_SEQUENCE)
     print(total_samples)
     
@@ -118,7 +113,7 @@ def create_datasets():
         print(structure_id)
         if structure_id == "palindrome":
             seq_length = LENGTH_OF_SEQUENCE
-            dataset = IsPalindromeDataset(num_samples=total_samples, seq_length=seq_length, palindrome_length=4,equivariant=False)
+            dataset = IsPalindromeDataset(num_samples=total_samples, seq_length=seq_length, palindrome_length=3,equivariant=False)
             graph_configs[structure_id] = {
             "n_nodes": seq_length,
             "perms": generate_graph_structure("palindrome", seq_length),
@@ -221,7 +216,8 @@ def run_experiments_inv():
     base_size = min(len(train_datasets[s]) for s in all_structures)
 
     # Example: must be length k each
-    settings = [[0, 0, 0, 1]]  # <- will error if k != 4
+    #settings = [[1, 1, 1, 1]]  # <- will error if k != 4
+    settings = [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]
 
     # --- Validate settings shape ---
     if len(settings) == 0:
@@ -262,7 +258,7 @@ def run_experiments_inv():
 
         trial_losses = {s: [] for s in all_structures}
 
-        for trial in range(2):
+        for trial in range(1):
             # Build training subsets according to fractions
             combined_train = []
             for frac, struct in zip(setting, all_structures):
@@ -652,4 +648,4 @@ def run_vandermonde_mlp():
 
 
 if __name__ == "__main__":
-    run_experiments_inv()
+    run_pretrain_finetune_experiment()
