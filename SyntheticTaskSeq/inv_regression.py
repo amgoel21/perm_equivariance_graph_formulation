@@ -19,7 +19,7 @@ def generate_graph_structure(dataset_name, seq_length):
     """
     Creates adjacency matrices and orbit mappings for different dataset structures.
     """
-
+    return [Permutation([i for i in range(seq_length)])]
     if dataset_name == "palindrome":
         # Mirror adjacency (Characters linked to their mirrored counterparts)
         perms = [Permutation([i for i in range(seq_length)]), Permutation([seq_length - i - 1 for i in range(seq_length)])]
@@ -103,8 +103,8 @@ def create_datasets():
 
     #structures = ['longestpal','palindrome','intersect','detectcapital']
     structures = ['longestpal','detectcapital','intersect' ,'palindrome']
-    total_samples = 4000
-    LENGTH_OF_SEQUENCE = 6
+    total_samples = 24000
+    LENGTH_OF_SEQUENCE = 8
     print(LENGTH_OF_SEQUENCE)
     print(total_samples)
     
@@ -258,7 +258,7 @@ def run_experiments_inv():
 
         trial_losses = {s: [] for s in all_structures}
 
-        for trial in range(1):
+        for trial in range(3):
             # Build training subsets according to fractions
             combined_train = []
             for frac, struct in zip(setting, all_structures):
@@ -648,4 +648,4 @@ def run_vandermonde_mlp():
 
 
 if __name__ == "__main__":
-    run_pretrain_finetune_experiment()
+    run_experiments_inv()
