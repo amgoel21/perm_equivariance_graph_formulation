@@ -66,6 +66,8 @@ Task universe is ordered by complexity; `--n_task N` selects the **last N** task
 
 ### `equiv_experiments.py` — Equivariant Classification
 
+*(Results correspond to **Figures 4–8** in the paper)*
+
 #### Functions
 
 | Function | Description |
@@ -97,10 +99,10 @@ Task universe is ordered by complexity; `--n_task N` selects the **last N** task
 
 ```bash
 # Multitask with 3-task bundle, 5 trials
-python SyntheticTaskSeq/equiv_experiments.py --mode multitask --T 1 --trials 5 --num_epochs 50
+python SyntheticTaskSeq/equiv_experiments.py --mode multitask --T 1 --trials 5 --num_epochs 50 --logging
 
 # Multitask with 6 tasks (last 6 from universe)
-python SyntheticTaskSeq/equiv_experiments.py --mode multitask --n_task 6 --trials 3
+python SyntheticTaskSeq/equiv_experiments.py --mode multitask --n_task 6 --trials 3 --logging
 
 # Pretrain on all tasks, finetune on 'intersect', with logging
 python SyntheticTaskSeq/equiv_experiments.py --mode pretrain \
@@ -108,12 +110,14 @@ python SyntheticTaskSeq/equiv_experiments.py --mode pretrain \
     --num_pretrain_epochs 20 --num_epochs 40 --logging
 
 # Non-equivariant baseline
-python SyntheticTaskSeq/equiv_experiments.py --mode multitask --non_equiv --trials 3
+python SyntheticTaskSeq/equiv_experiments.py --mode multitask --non_equiv --trials 3 --logging
 ```
 
 ---
 
 ### `inv_regression.py` — Invariant Regression
+
+*(Results correspond to **Tables 6, 7** and **Figure 9** in the paper)*
 
 #### Functions
 
@@ -122,13 +126,12 @@ python SyntheticTaskSeq/equiv_experiments.py --mode multitask --non_equiv --tria
 | `create_datasets(n_task, SAMPLE_NUMBER, vocab_size, non_equiv)` | Builds datasets for invariant regression tasks. `n_task=None` uses the default 4-task set `[longestpal, palindrome, detectcapital, intersect]`; pass an integer to select from the full 6-task universe. |
 | `run_experiments_inv(n_task, trials, num_epochs, batch_size, SAMPLE_NUMBER, vocab_size, non_equiv)` | Multitask regression: trains on all loaded tasks simultaneously using L1 regression loss, sweeping over single-task / all-task ratios. |
 | `run_pretrain_finetune_experiment(finetune_task, n_task, trials, num_pretrain_epochs, num_finetune_epochs, batch_size, SAMPLE_NUMBER, vocab_size, non_equiv)` | Transfer learning with regression: pretrain with scaled L1 (normalised by output range), then finetune with unscaled L1 on `finetune_task`. Compares `pretrain+finetune` vs `finetune_only`. |
-| `run_vandermonde_mlp(trials, num_epochs, batch_size)` | Standalone Vandermonde regression experiment using a permutation-invariant MLP (`PermutationMLP`). |
 
 #### CLI Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--mode` | `multitask` | `multitask`, `pretrain`, or `vandermonde` |
+| `--mode` | `multitask` | `multitask` or `pretrain` |
 | `--n_task` | `None` | Select last N tasks from the 6-task universe |
 | `--trials` | `3` | Number of repeated trials |
 | `--batch_size` | `64` | Training batch size |
@@ -144,18 +147,15 @@ python SyntheticTaskSeq/equiv_experiments.py --mode multitask --non_equiv --tria
 
 ```bash
 # Multitask over 4 default invariant tasks, 3 trials
-python SyntheticTaskSeq/inv_regression.py --mode multitask --trials 3
+python SyntheticTaskSeq/inv_regression.py --mode multitask --trials 3 --logging
 
 # Multitask over 6 tasks
-python SyntheticTaskSeq/inv_regression.py --mode multitask --n_task 6 --trials 3
+python SyntheticTaskSeq/inv_regression.py --mode multitask --n_task 6 --trials 3 --logging
 
 # Pretrain → finetune on 'palindrome', with logging
 python SyntheticTaskSeq/inv_regression.py --mode pretrain \
     --finetune_task palindrome --n_task 4 --trials 3 \
     --num_pretrain_epochs 30 --num_epochs 50 --logging
-
-# Vandermonde MLP baseline
-python SyntheticTaskSeq/inv_regression.py --mode vandermonde --trials 5 --num_epochs 50
 ```
 
 ---
@@ -163,6 +163,8 @@ python SyntheticTaskSeq/inv_regression.py --mode vandermonde --trials 5 --num_ep
 ## Approx_Equivariant_Graph_Nets
 
 ### DCRNN_Pytorch — Traffic Forecasting
+
+*(Results correspond to **Table 2** in the paper)*
 
 Diffusion Convolutional Recurrent Neural Network adapted with approximately-equivariant graph structure. Run from `Approx_Equivariant_Graph_Nets/DCRNN_Pytorch/`.
 
@@ -200,6 +202,8 @@ The YAML config controls:
 ---
 
 ### Human_Pose_Est — 3D Human Pose Estimation
+
+*(Results correspond to **Table 1** in the paper)*
 
 Equivariant and approximate-equivariant GCN models for lifting 2D keypoints to 3D. Run from `Approx_Equivariant_Graph_Nets/Human_Pose_Est/`.
 
@@ -263,3 +267,16 @@ python main_gcn_equiv.py --actions "Walking,Eating,Smoking" --epochs 50
 ```
 
 Metrics reported: **MPJPE** (Protocol #1) and **P-MPJPE** (Procrustes-aligned, Protocol #2) in millimetres.
+
+## Citation
+
+```bibtex
+@inproceedings{
+goel2026anysubgroup,
+title={Any-Subgroup Equivariant Networks via Symmetry Breaking},
+author={Abhinav Goel and Derek Lim and Hannah Lawrence and Stefanie Jegelka and Ningyuan Huang},
+booktitle={The Fourteenth International Conference on Learning Representations},
+year={2026},
+url={https://openreview.net/forum?id=jz3d7nvtGz}
+}
+```

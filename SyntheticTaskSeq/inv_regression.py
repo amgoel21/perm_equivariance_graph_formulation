@@ -6,7 +6,7 @@ import argparse
 import logging
 import os, sys
 from torch.utils.data import DataLoader, random_split
-from models.Multi_GAT import MultiGraphGATv2Model_inv,MultiGraphGATv2Model_equiv, PermutationMLP
+from models.Multi_GAT import MultiGraphGATv2Model_inv,MultiGraphGATv2Model_equiv
 from sympy import *
 from sympy.combinatorics import Permutation, PermutationGroup
 from random import randrange
@@ -585,91 +585,91 @@ def run_pretrain_finetune_experiment(finetune_task=None, n_task=None, trials=4, 
 
 
 
-def run_vandermonde_mlp(trials=3, num_epochs=50, batch_size=64):
-    """Vandermonde tests, not for general invariance tests"""
+# def run_vandermonde_mlp(trials=3, num_epochs=50, batch_size=64):
+#     """Vandermonde tests, not for general invariance tests"""
 
-    full_dataset = Vandermonde(num_samples=6000, seq_length=3, vocab_size=15)
+#     full_dataset = Vandermonde(num_samples=6000, seq_length=3, vocab_size=15)
 
-    # Print label distribution
-    label_counts = Counter([label.item() for _, label in full_dataset])
-    logger.info(f"Label distribution: {label_counts}")
+#     # Print label distribution
+#     label_counts = Counter([label.item() for _, label in full_dataset])
+#     logger.info(f"Label distribution: {label_counts}")
 
-    # Split dataset
-    train_size = int(0.7 * len(full_dataset))
-    val_size = int(0.15 * len(full_dataset))
-    test_size = len(full_dataset) - train_size - val_size
-    train_set, val_set, test_set = random_split(full_dataset, [train_size, val_size, test_size])
+#     # Split dataset
+#     train_size = int(0.7 * len(full_dataset))
+#     val_size = int(0.15 * len(full_dataset))
+#     test_size = len(full_dataset) - train_size - val_size
+#     train_set, val_set, test_set = random_split(full_dataset, [train_size, val_size, test_size])
 
-    def collate_fn(batch):
-        xs = torch.stack([item[0] for item in batch]).float()  # shape (B, seq_len)
-        ys = torch.tensor([item[1] for item in batch])         # shape (B,)
-        return xs, ys
+#     def collate_fn(batch):
+#         xs = torch.stack([item[0] for item in batch]).float()  # shape (B, seq_len)
+#         ys = torch.tensor([item[1] for item in batch])         # shape (B,)
+#         return xs, ys
 
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
-    val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
-    test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+#     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+#     val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+#     test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
 
-    trial_test_losses = []
+#     trial_test_losses = []
 
-    for trial in range(trials):
-        logger.info(f"=== Trial {trial+1} ===")
-        model = PermutationMLP(seq_length=3, hidden_dim=128).to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-        criterion = torch.nn.CrossEntropyLoss()
+#     for trial in range(trials):
+#         logger.info(f"=== Trial {trial+1} ===")
+#         model = PermutationMLP(seq_length=3, hidden_dim=128).to(device)
+#         optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+#         criterion = torch.nn.CrossEntropyLoss()
 
-        for epoch in range(num_epochs):
-            model.train()
-            total_loss = 0.0
-            for x_batch, y_batch in train_loader:
-                x_batch, y_batch = x_batch.to(device), y_batch.to(device)
-                optimizer.zero_grad()
-                preds = model(x_batch)
-                loss = criterion(preds, y_batch)
-                loss.backward()
-                optimizer.step()
-                total_loss += loss.item()
-            avg_train_loss = total_loss / len(train_loader)
-            logger.info(f"Epoch {epoch+1}: Train Loss = {avg_train_loss:.4f}")
+#         for epoch in range(num_epochs):
+#             model.train()
+#             total_loss = 0.0
+#             for x_batch, y_batch in train_loader:
+#                 x_batch, y_batch = x_batch.to(device), y_batch.to(device)
+#                 optimizer.zero_grad()
+#                 preds = model(x_batch)
+#                 loss = criterion(preds, y_batch)
+#                 loss.backward()
+#                 optimizer.step()
+#                 total_loss += loss.item()
+#             avg_train_loss = total_loss / len(train_loader)
+#             logger.info(f"Epoch {epoch+1}: Train Loss = {avg_train_loss:.4f}")
 
-            # Validation
-            model.eval()
-            with torch.no_grad():
-                val_loss = 0.0
-                for x_batch, y_batch in val_loader:
-                    x_batch, y_batch = x_batch.to(device), y_batch.to(device)
-                    preds = model(x_batch)
-                    loss = criterion(preds, y_batch)
-                    val_loss += loss.item()
-                avg_val_loss = val_loss / len(val_loader)
-                logger.info(f"           Val Loss = {avg_val_loss:.4f}")
+#             # Validation
+#             model.eval()
+#             with torch.no_grad():
+#                 val_loss = 0.0
+#                 for x_batch, y_batch in val_loader:
+#                     x_batch, y_batch = x_batch.to(device), y_batch.to(device)
+#                     preds = model(x_batch)
+#                     loss = criterion(preds, y_batch)
+#                     val_loss += loss.item()
+#                 avg_val_loss = val_loss / len(val_loader)
+#                 logger.info(f"           Val Loss = {avg_val_loss:.4f}")
 
-        # Test
-        model.eval()
-        all_preds, all_labels = [], []
-        test_loss = 0.0
-        with torch.no_grad():
-            for x_batch, y_batch in test_loader:
-                x_batch, y_batch = x_batch.to(device), y_batch.to(device)
-                logits = model(x_batch)
-                loss = criterion(logits, y_batch)
-                test_loss += loss.item()
+#         # Test
+#         model.eval()
+#         all_preds, all_labels = [], []
+#         test_loss = 0.0
+#         with torch.no_grad():
+#             for x_batch, y_batch in test_loader:
+#                 x_batch, y_batch = x_batch.to(device), y_batch.to(device)
+#                 logits = model(x_batch)
+#                 loss = criterion(logits, y_batch)
+#                 test_loss += loss.item()
 
-                preds = logits.argmax(dim=1).cpu().numpy()
-                all_preds.extend(preds)
-                all_labels.extend(y_batch.cpu().numpy())
+#                 preds = logits.argmax(dim=1).cpu().numpy()
+#                 all_preds.extend(preds)
+#                 all_labels.extend(y_batch.cpu().numpy())
 
-        avg_test_loss = test_loss / len(test_loader)
-        trial_test_losses.append(avg_test_loss)
-        logger.info(f"Test Loss: {avg_test_loss:.4f}")
+#         avg_test_loss = test_loss / len(test_loader)
+#         trial_test_losses.append(avg_test_loss)
+#         logger.info(f"Test Loss: {avg_test_loss:.4f}")
 
-        # Confusion Matrix
-        cm = confusion_matrix(all_labels, all_preds)
-        logger.info(f"Confusion Matrix:\n{cm}")
+#         # Confusion Matrix
+#         cm = confusion_matrix(all_labels, all_preds)
+#         logger.info(f"Confusion Matrix:\n{cm}")
 
-    # Summary
-    logger.info("====== Final Summary ======")
-    logger.info(f"Mean Test Loss: {np.mean(trial_test_losses):.4f}")
-    logger.info(f"Std Dev:        {np.std(trial_test_losses):.4f}")
+#     # Summary
+#     logger.info("====== Final Summary ======")
+#     logger.info(f"Mean Test Loss: {np.mean(trial_test_losses):.4f}")
+#     logger.info(f"Std Dev:        {np.std(trial_test_losses):.4f}")
 
 
 
@@ -679,7 +679,7 @@ def run_vandermonde_mlp(trials=3, num_epochs=50, batch_size=64):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', type=str, default="multitask",
-                        choices=["multitask", "pretrain", "vandermonde"],
+                        choices=["multitask", "pretrain"],
                         help='Which experiment to run')
     parser.add_argument('--n_task', type=int, default=None,
                         help='Number of tasks to select from the task universe (selects last n)')
