@@ -1,4 +1,0 @@
-defaults:
-  - base_config_zinc
-  - dataset: zinc_subset
-  - model: subset_128

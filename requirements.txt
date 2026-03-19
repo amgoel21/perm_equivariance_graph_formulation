@@ -1,0 +1,38 @@
+# ============================================================
+# Requirements for perm_equivariance_graph_formulation
+# Covers: SyntheticTaskSeq/ and Approx_Equivariant_Graph_Nets/
+# ============================================================
+
+# ----- Core deep learning -----
+torch>=2.0.0
+torchvision>=0.15.0          # image_inpainting
+
+# ----- PyTorch Geometric -----
+# GATv2Conv used in SyntheticTaskSeq/models/Multi_GAT.py
+# and image_inpainting models.
+# Install wheel matching your torch + CUDA version:
+# https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html
+torch_geometric>=2.4.0
+# torch_scatter
+# torch_sparse
+# torch_cluster
+# torch_spline_conv
+
+# ----- Numerics & math -----
+numpy>=1.24.0
+sympy>=1.12                  # permutation group construction
+
+# ----- Graph utilities -----
+networkx>=3.0                # image_inpainting coarsening
+
+# ----- ML / data science -----
+scikit-learn>=1.3.0          # confusion_matrix, train_test_split
+pandas>=2.0.0                # image_inpainting analysis
+einops>=0.7.0                # image_inpainting rearrange
+
+# ----- Visualisation -----
+matplotlib>=3.7.0
+seaborn>=0.13.0              # image_inpainting plots
+
+# ----- Config / serialisation -----
+PyYAML>=6.0                  # DCRNN_Pytorch config files

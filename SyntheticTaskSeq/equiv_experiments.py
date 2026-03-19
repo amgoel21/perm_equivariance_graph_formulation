@@ -2,26 +2,42 @@ import torch
 import pickle
 import random
 import numpy as np
+import logging
 from torch.utils.data import DataLoader, random_split
 from models.Multi_GAT import MultiGraphGATv2Model_inv,MultiGraphGATv2Model_equiv
 from sympy import *
 from sympy.combinatorics import Permutation, PermutationGroup
 from random import randrange
-from data import IsBalancedParenthesisDataset, IsPalindromeDataset, IntersectDataset, MaxCyclicSumDataset, SetGameDataset, SETIntersect  # Import dataset classes
+from data import IsBalancedParenthesisDataset, IsPalindromeDataset, IntersectDataset, MaxCyclicSumDataset, SetGameDataset, SETIntersect, \
+                 MonotoneConstRunDataset, SymDiffDataset, TargetSumDataset, \
+                 MaxCyclicProductDataset, MaxCyclicAlterSumDataset  # Import dataset classes
 from torch.utils.data import ConcatDataset, DataLoader
 from collections import deque
+import os, sys
+import argparse 
+import time
+import copy
+import matplotlib.pyplot as plt
+from plot_utils import plot_training_curves, plot_pretrain_finetune
+
+logger = logging.getLogger(__name__)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def generate_graph_structure(dataset_name, seq_length):
+def generate_graph_structure(dataset_name, seq_length, non_equiv=False):
     """
-    Creates adjacency matrices and orbit mappings for different dataset structures.
+    Creates adjacency matrices and orbit mappings for different dataset structures (support all task from data.py)
+    Also can accomodate non-equivariant baseline
     """
 
-    if dataset_name == "palindrome":
+    if non_equiv:
+        perms = [Permutation([i for i in range(seq_length)])]
+        logger.info(f"non-equiv, {len(perms)}")
+        return perms
+    if dataset_name in ["palindrome", "monotone", "constant"]:
         perms = [Permutation([i for i in range(seq_length)]), Permutation([seq_length - i - 1 for i in range(seq_length)])]
         #perms = [Permutation([i for i in range(seq_length)])]
-    elif dataset_name == "cyclicsum":
+    elif dataset_name in ["cyclicsum", "cyclicprod", "cyclicaltsum"]:
         identity = [i for i in range(seq_length)]
         perms = [Permutation(identity)]
         oppositeidentity = [seq_length-1-i for i in range(seq_length)]
@@ -31,7 +47,7 @@ def generate_graph_structure(dataset_name, seq_length):
             my_list.rotate(i)  # rotate right by 1
             perms.append(Permutation(list(my_list)))
 
-    elif dataset_name == "intersect" or dataset_name == 'setintersect':
+    elif dataset_name in ["intersect", "setintersect", "symdiff", "targetsum"]:
         mid = seq_length//2
         identity = [i for i in range(seq_length)]    
         perms=[Permutation(identity)]
@@ -49,18 +65,22 @@ def generate_graph_structure(dataset_name, seq_length):
             perm = identity.copy()
             perm[i], perm[i+1] = perm[i+1], perm[i]  # swap adjacent
             perms.append(Permutation(perm))
-    
-
     else:
         raise ValueError(f"Unknown dataset {dataset_name}")
-    print(len(perms))
+    logger.info(f"Number of permutations: {len(perms)}")
     return perms
 
 
 
-def create_datasets():
+def create_datasets(T=1, n_task=None, SAMPLE_NUMBER=2500, vocab_size=7, non_equiv=False):
     """
     Creates datasets for multiple graph structures and returns a combined dataset with labels.
+    Args:
+    - T: the integer multiple of the task bundle (i.e., multiples of the same set of task symmetries) 
+    - n_task: select n_task from the task universe specified in structures 
+    - SAMPLE_NUMBER: per-task data samples (75/15/15 train/validation/test splits)
+    - vocab_size: vocabularity size for the sequence task
+    - non_equiv: default False (for running our ASEN model); if True, run non-equivariant baseline
     """
     graph_configs = {}
     dataset_splits = {}
@@ -69,43 +89,71 @@ def create_datasets():
     val_data={}
 
     # Define structure names (or structure IDs)
-    structures = [ "palindrome","cyclicsum", "intersect"]
+    if n_task is not None:
+        structures = ["constant", "cyclicaltsum", "targetsum", "monotone","cyclicprod","symdiff", "palindrome","cyclicsum", "intersect"]
+        structures = structures[-n_task:] 
+    else:
+        structures = [ "palindrome","cyclicsum", "intersect"] 
+        if T == 2:
+            structures = ["monotone","cyclicprod","symdiff"] + structures
+        if T == 3:
+            structures = ["constant", "cyclicaltsum", "targetsum", "monotone","cyclicprod","symdiff"] + structures
+
     LENGTH_OF_SEQUENCE = 10
-    SAMPLE_NUMBER = 2500
-    print(LENGTH_OF_SEQUENCE)
-    print(SAMPLE_NUMBER)
+    logger.info(f"LENGTH_OF_SEQUENCE = {LENGTH_OF_SEQUENCE}")
+    logger.info(f"SAMPLE_NUMBER = {SAMPLE_NUMBER}")
+    logger.info(f"vocab_size = {vocab_size}")
     for structure_id in structures:
-        print(structure_id)
-        if structure_id == "palindrome":
-            seq_length = LENGTH_OF_SEQUENCE
-            dataset = IsPalindromeDataset(num_samples=SAMPLE_NUMBER, seq_length=seq_length, palindrome_length=4,equivariant=True)
+        logger.info(f"Processing structure: {structure_id}")
+        if structure_id in ["palindrome", "monotone", "constant"]: #no vocab size, use all string.digits
+            if structure_id == "palindrome":
+                dataset = IsPalindromeDataset(num_samples=SAMPLE_NUMBER, seq_length=LENGTH_OF_SEQUENCE, palindrome_length=4,equivariant=True)
+            else: 
+                equal_flag = True if structure_id == "constant" else False
+                dataset = MonotoneConstRunDataset(num_samples=SAMPLE_NUMBER, seq_length=LENGTH_OF_SEQUENCE, run_length=4, seed=42,
+                                    equivariant=True, strict=True, equal=equal_flag)
             graph_configs[structure_id] = {
-            "n_nodes": seq_length,
-            "perms": generate_graph_structure("palindrome", seq_length),
+            "n_nodes": LENGTH_OF_SEQUENCE,
+            "perms": generate_graph_structure("palindrome", LENGTH_OF_SEQUENCE, non_equiv), #reuse palindrome edge orbits
             "coords_dim": (1,1),
             "adj": None,
             "orbits": None,
             "sparse": False,
             "out_dim": 2
         }
-        elif structure_id == "intersect":
-            seq_length = LENGTH_OF_SEQUENCE
-            dataset = IntersectDataset(num_samples=SAMPLE_NUMBER, seq_length=seq_length, vocab_size=13,equivariant=True)
+        elif structure_id in ["intersect", "symdiff", "targetsum"]:
+            if structure_id == "intersect":
+                dataset = IntersectDataset(num_samples=SAMPLE_NUMBER, seq_length=LENGTH_OF_SEQUENCE, vocab_size=vocab_size,
+                                    equivariant=True)
+            #new intersect-like tasks
+            elif structure_id == "symdiff":
+                dataset = SymDiffDataset(num_samples=SAMPLE_NUMBER, seq_length=LENGTH_OF_SEQUENCE, vocab_size=vocab_size, 
+                                    seed=42, equivariant=True)
+            elif structure_id == "targetsum":
+                dataset = TargetSumDataset(num_samples=SAMPLE_NUMBER, seq_length=LENGTH_OF_SEQUENCE, vocab_size=vocab_size, 
+                                    seed=42, equivariant=True, target_sum=vocab_size)
             graph_configs[structure_id] = {
-            "n_nodes": seq_length,
-            "perms": generate_graph_structure("intersect", seq_length),
+            "n_nodes": LENGTH_OF_SEQUENCE,
+            "perms": generate_graph_structure("intersect", LENGTH_OF_SEQUENCE, non_equiv),
             "coords_dim": (1,1),
             "adj": None,
             "orbits": None,
             "sparse": False,
             "out_dim": 4
         }
-        elif structure_id == "cyclicsum":
-            seq_length = LENGTH_OF_SEQUENCE
-            dataset = MaxCyclicSumDataset(num_samples=SAMPLE_NUMBER, seq_length=seq_length, cyc_length = 4, vocab_size=13)
+        elif structure_id in ["cyclicsum","cyclicprod", "cyclicaltsum"]:
+            if structure_id == "cyclicsum":
+                dataset = MaxCyclicSumDataset(num_samples=SAMPLE_NUMBER, seq_length=LENGTH_OF_SEQUENCE, cyc_length = 4, vocab_size=vocab_size)
+             #new cyclicsum-like tasks
+            elif structure_id == "cyclicprod":
+                dataset = MaxCyclicProductDataset(num_samples=SAMPLE_NUMBER, seq_length=LENGTH_OF_SEQUENCE, cyc_length=4, 
+                                    vocab_size=vocab_size, seed=42)
+            elif structure_id == "cyclicaltsum":
+                dataset = MaxCyclicAlterSumDataset(num_samples=SAMPLE_NUMBER, seq_length=LENGTH_OF_SEQUENCE, cyc_length=4, 
+                                    vocab_size=vocab_size, seed=42)
             graph_configs[structure_id] = {
-            "n_nodes": seq_length,
-            "perms": generate_graph_structure("cyclicsum", seq_length),
+            "n_nodes": LENGTH_OF_SEQUENCE,
+            "perms": generate_graph_structure("cyclicsum", LENGTH_OF_SEQUENCE, non_equiv),
             "coords_dim": (1,1),
             "adj": None,
             "orbits": None,
@@ -117,7 +165,7 @@ def create_datasets():
             dataset = SetGameDataset(num_samples=SAMPLE_NUMBER, seq_length=seq_length)
             graph_configs[structure_id] = {
             "n_nodes": seq_length,
-            "perms": generate_graph_structure("set", seq_length),
+            "perms": generate_graph_structure("set", seq_length, non_equiv),
             "coords_dim": (1,1),
             "adj": None,
             "orbits": None,
@@ -129,23 +177,17 @@ def create_datasets():
             dataset = SETIntersect(num_samples=SAMPLE_NUMBER, seq_length=seq_length)
             graph_configs[structure_id] = {
             "n_nodes": seq_length,
-            "perms": generate_graph_structure("setintersect", seq_length),
+            "perms": generate_graph_structure("setintersect", seq_length, non_equiv),
             "coords_dim": (1,1),
             "adj": None,
             "orbits": None,
             "sparse": False,
             "out_dim": 4
         }
-
+       
         labeled_dataset = [(seq.unsqueeze(-1), label, structure_id) for seq, label in dataset]
 
         # # Split into train/test
-        # train_size = int(0.8 * len(labeled_dataset))
-        # test_size = len(labeled_dataset) - train_size
-        # train_dataset, test_dataset = random_split(labeled_dataset, [train_size, test_size])
-        # train_data[structure_id] = train_dataset
-        # test_data[structure_id] = test_dataset
-
         train_size = int(0.7 * len(labeled_dataset))
         val_size = int(0.15 * len(labeled_dataset))
         test_size = len(labeled_dataset) - train_size - val_size
@@ -256,17 +298,35 @@ def dump_edge_features(model, graph_configs, out_dir: str, tag: str = ""):
 
 
 
-def run_multitask_experiments():
-    import copy
-    import matplotlib.pyplot as plt
-    import numpy as np
-
-    graph_configs, train_datasets, val_datasets, test_datasets = create_datasets()
+def run_multitask_experiments(r=0.4, T=1, bs=64, trials=1, single=False, 
+                              n_task=None, same_bs=False, vocab_size=7, 
+                              non_equiv=False, num_epochs=40):
+    '''
+    Main function to launch the multitask experiment (including single-task setting as a special case)
+    Args:
+    - r: data sample units (vary r to investigate the scaling behavior w.r.t training size)
+    - T: multiples of task bundle
+    - bs: training batch size
+    - trials: number of experiment trials
+    - single: default False for multitask setting; if True, run single-task setting
+    - n_task: the number of tasks selected from the task universe
+    - same_bs: ablation parameter on batch size effect when changing the number of tasks
+    - vocab_size: vocabulary size for the sequence task
+    - non_equiv: default False for our ASEN model; if True, run the non-equivariant baseline
+    - num_epoch: number of training epochs
+    '''
+    if r <= 1.0:
+        trainsize = 2500
+    else:
+        trainsize = int(2500*r)
+        r = 1.0 #renormalize
+    logger.info(f"trainsize = {trainsize}")
+    graph_configs, train_datasets, val_datasets, test_datasets = create_datasets(T=T, n_task=n_task, SAMPLE_NUMBER=trainsize, 
+                                                                                vocab_size=vocab_size, non_equiv=non_equiv)
     all_structures = list(train_datasets.keys())
     k = len(all_structures)
     if k == 0:
         raise ValueError("No structures found in train_datasets; all_structures is empty.")
-
 
     # Example settings (must be length k each):
     # settings = [
@@ -274,7 +334,19 @@ def run_multitask_experiments():
     #     (1.0, 0.2, 0.2),
     #     (0.2, 1.0, 0.2),
     # ]
-    settings = [(1, 0, 0), (0, 0, 1)]  # <-- must match k; will error if k != 3
+    #settings = [tuple([r]*k), tuple([0]*(k-1) + [r])]  # <-- must match k; will error if k != 3
+    if single:
+        settings = [tuple([0]*(k-3) + [r] + [0]*2), tuple([0]*(k-2) + [r] + [0]), tuple([0]*(k-1) + [r])]
+        #settings = [tuple([0]*(k-1) + [r])]
+        batch_size = bs
+    else: #multitask -- ablation on the effect of training batchsize
+        if same_bs:
+            batch_size = bs
+        elif n_task is not None:
+            batch_size = int(bs/3)*k
+        else:
+            batch_size = bs*T
+    logger.info(f"Settings: {settings}, batch_size: {batch_size}")
 
     # --- Validate settings shape ---
     if len(settings) == 0:
@@ -311,7 +383,7 @@ def run_multitask_experiments():
             f"{frac} {struct}"
             for frac, struct in zip(frac_tuple, all_structures)
         )
-        print(f"\nRunning setting: {mix_str}")
+        logger.info(f"Running setting: {mix_str}")
 
         # Track test losses per structure over trials
         trial_losses = {struct: [] for struct in all_structures}
@@ -325,13 +397,12 @@ def run_multitask_experiments():
             subsets.append(subset)
         combined_train = [item for subset in subsets for item in subset]
 
-        for trial in range(1):
-            # print(f"  Trial {trial + 1}/3")
+        for trial in range(trials):
             random.shuffle(combined_train)
 
             train_loader = DataLoader(
                 combined_train,
-                batch_size=64,
+                batch_size=batch_size,
                 shuffle=True,
                 collate_fn=collate_fn
             )
@@ -339,7 +410,7 @@ def run_multitask_experiments():
             val_loaders = {
                 struct: DataLoader(
                     list(val_datasets[struct]),
-                    batch_size=64,
+                    batch_size=batch_size*100,
                     shuffle=False,
                     collate_fn=collate_fn
                 )
@@ -350,6 +421,10 @@ def run_multitask_experiments():
                 graph_configs, hid_dim=128, num_layers=4,
                 p_dropout=0.1, vocab_size=81
             ).to(device)
+
+            ## DEBUG
+            for struct_id, config in model.graph_configs.items():
+                logger.debug(f"struct = {struct_id}, model has number of edge categories = {model.num_categories[struct_id]}")
 
             gnn_params = []
             edge_embedder_params = []
@@ -369,12 +444,13 @@ def run_multitask_experiments():
                 {'params': token_embedder_params,'lr': 0.1},  # Token embedders
             ])
             criterion = torch.nn.CrossEntropyLoss()
-            num_epochs = 40
 
             train_epoch_losses = []
             val_epoch_losses = {struct: [] for struct in all_structures}
 
             for epoch in range(num_epochs):
+                torch.cuda.synchronize()
+                start = time.time()
                 model.train()
                 epoch_loss = 0.0
 
@@ -395,7 +471,10 @@ def run_multitask_experiments():
 
                 avg_train_loss = epoch_loss / len(train_loader)
                 train_epoch_losses.append(avg_train_loss)
-                print(f"    Epoch {epoch+1}/{num_epochs} - Train Loss: {avg_train_loss:.4f}")
+                torch.cuda.synchronize()
+                end = time.time()
+                logger.info(f"    Epoch {epoch+1}/{num_epochs} - Train Loss: {avg_train_loss:.4f}")
+                logger.info(f"    Epoch {epoch+1}/{num_epochs} - Train Time: {(end - start):.4f} secs!")
 
                 # Validation per structure
                 model.eval()
@@ -422,19 +501,9 @@ def run_multitask_experiments():
                             val_loss / num_batches if num_batches > 0 else float('nan')
                         )
                         val_epoch_losses[struct].append(avg_val_loss)
-                        # print(f"  Val Loss [{struct}]: {avg_val_loss:.4f}")
 
             for struct in all_structures:
-                print(f"Trial 1, Struct {struct}: {val_epoch_losses[struct]}")
-
-            # # Dump edge features
-            # mix_tag = "-".join(str(f) for f in frac_tuple)
-            # model.dump_edge_features(
-            #     out_dir="/home/amgoel/Approx_equiv/SyntheticTaskSeq/logs",
-            #     tag=f"multitask_equiv_weakened_mix={mix_tag}__trial=1",
-            #     structures=all_structures,
-            #     include_all_pairs=True
-            # )
+                logger.info(f"Trial 1, Struct {struct}: {val_epoch_losses[struct]}")
 
             # Final test losses
             model.eval()
@@ -442,7 +511,7 @@ def run_multitask_experiments():
                 for struct in all_structures:
                     test_loader = DataLoader(
                         list(test_datasets[struct]),
-                        batch_size=64,
+                        batch_size=bs*T*100,
                         shuffle=False,
                         collate_fn=collate_fn
                     )
@@ -472,31 +541,57 @@ def run_multitask_experiments():
         }
         results[tuple(frac_tuple)] = avg_losses
 
-    print("\n==== Final Average Test Losses Across Trials ====")
+    logger.info("==== Final Average Test Losses Across Trials ====")
     for setting, loss_dict in results.items():
         frac_tuple = setting
         mix_str = " + ".join(
             f"{frac} {struct}"
             for frac, struct in zip(frac_tuple, all_structures)
         )
-        print(f"{mix_str}:")
+        logger.info(f"{mix_str}:")
         for struct in all_structures:
-            print(f"  {struct}: {loss_dict[struct]:.4f}")
+            logger.info(f"  {struct}: {loss_dict[struct]:.4f}")
+
+    # --- Plot last setting's training curves ---
+    if train_epoch_losses:
+        plot_training_curves(
+            train_losses=train_epoch_losses,
+            val_losses_dict=val_epoch_losses if val_epoch_losses else None,
+            title=f"Multitask Training Curves (last setting, T={T})",
+            save_path=None,
+            show=True,
+        )
 
 
 
-def run_pretrain_finetune_experiment_equiv():
-    # Transfer learning with pretrained model
+def run_pretrain_finetune_experiment_equiv(finetune_task=None, T=1, n_task=None, trials=1,
+                                           bs=64, vocab_size=7, non_equiv=False,
+                                           num_pretrain_epochs=15, num_finetune_epochs=40):
+    """
+    Transfer learning experiment: pretrain on all tasks except finetune_task, then finetune.
+    Args:
+    - finetune_task: name of the task to fine-tune on; if None, defaults to the last task in the loaded set
+    - T, n_task, vocab_size, non_equiv: passed through to create_datasets (same as multitask)
+    - trials: number of repeated trials
+    - bs: batch size
+    - num_pretrain_epochs: epochs for pretraining phase
+    - num_finetune_epochs: epochs for finetuning phase
+    """
     import numpy as np
 
-    graph_configs, train_datasets, val_datasets, test_datasets = create_datasets()
+    graph_configs, train_datasets, val_datasets, test_datasets = create_datasets(
+        T=T, n_task=n_task, vocab_size=vocab_size, non_equiv=non_equiv
+    )
     all_structures = list(train_datasets.keys())
-    print("Structures:", all_structures)
-    
+    logger.info(f"Structures: {all_structures}")
+
     # Pick finetune target
-    finetune_task = all_structures[-1]  
+    if finetune_task is None:
+        finetune_task = all_structures[-1]
+    if finetune_task not in all_structures:
+        raise ValueError(f"finetune_task '{finetune_task}' not in loaded structures: {all_structures}")
     pretrain_tasks = [s for s in all_structures if s != finetune_task]
-    print(f"Pretraining on: {pretrain_tasks} | Fine-tuning on: {finetune_task}")
+    logger.info(f"Pretraining on: {pretrain_tasks} | Fine-tuning on: {finetune_task}")
 
     # Build datasets
     pretrain_dataset = []
@@ -518,23 +613,27 @@ def run_pretrain_finetune_experiment_equiv():
         struct_ids = [item[2] for item in batch]
         return xs, ys, struct_ids
 
-    pretrain_loader = DataLoader(pretrain_dataset, batch_size=64, shuffle=True, collate_fn=collate_fn)
-    val_loader = DataLoader(finetune_val, batch_size=64, shuffle=False, collate_fn=collate_fn)
-    test_loader = DataLoader(finetune_test, batch_size=64, shuffle=False, collate_fn=collate_fn)
+    pretrain_loader = DataLoader(pretrain_dataset, batch_size=bs, shuffle=True, collate_fn=collate_fn)
+    val_loader = DataLoader(finetune_val, batch_size=bs, shuffle=False, collate_fn=collate_fn)
+    test_loader = DataLoader(finetune_test, batch_size=bs, shuffle=False, collate_fn=collate_fn)
 
-    num_pretrain_epochs = 15
-    num_finetune_epochs = 40
+    logger.info(f"Pretrain epochs: {num_pretrain_epochs} | Finetune epochs: {num_finetune_epochs}")
 
     results = {
         "pretrain+finetune": [],
         "finetune_only": []
     }
 
-    for experiment_type in ["pretrain+finetune", "finetune_only"]:
-        print(f"\n====== Starting Experiment: {experiment_type} ======")
+    # Track per-epoch losses for plotting (last trial only)
+    pretrain_epoch_losses = []
+    finetune_epoch_train = []
+    finetune_epoch_val = []
 
-        for trial in range(1):
-            print(f"\n--- Trial {trial+1} ---")
+    for experiment_type in ["pretrain+finetune", "finetune_only"]:
+        logger.info(f"====== Starting Experiment: {experiment_type} ======")
+
+        for trial in range(trials):
+            logger.info(f"--- Trial {trial+1}/{trials} ---")
 
             model = MultiGraphGATv2Model_equiv(
                 graph_configs, hid_dim=128, num_layers=4, p_dropout=0.1, vocab_size=82
@@ -543,8 +642,11 @@ def run_pretrain_finetune_experiment_equiv():
             criterion = torch.nn.CrossEntropyLoss()
 
             # === Pretraining Phase ===
+            pretrain_epoch_losses = []
+            finetune_epoch_train = []
+            finetune_epoch_val = []
             if experiment_type == "pretrain+finetune":
-                print("  Pretraining...")
+                logger.info("  Pretraining...")
                 for epoch in range(num_pretrain_epochs):
                     model.train()
                     total_loss = 0.0
@@ -562,19 +664,18 @@ def run_pretrain_finetune_experiment_equiv():
                         total_loss += loss.item()
 
                     avg_loss = total_loss / len(pretrain_loader)
+                    pretrain_epoch_losses.append(avg_loss)
                     if (epoch+1) % 5 == 0:
-                        print(f"    Pretrain Epoch {epoch+1}: Loss = {avg_loss:.4f}")
-                dump_path = f"edge_feats__{finetune_task}__pretrain__weirdest__trial={trial+1}.npz"
-                model.dump_edge_features(finetune_task, dump_path)
+                        logger.info(f"    Pretrain Epoch {epoch+1}: Loss = {avg_loss:.4f}")
 
             # === Finetuning Phase ===
-            print("  Fine-tuning...")
-            finetune_loader = DataLoader(finetune_train, batch_size=64, shuffle=True, collate_fn=collate_fn)
+            logger.info("  Fine-tuning...")
+            finetune_loader = DataLoader(finetune_train, batch_size=bs, shuffle=True, collate_fn=collate_fn)
             if experiment_type == "pretrain+finetune":
                 gnn_params = []
                 edge_embedder_params = []
                 token_embedder_params = []
-                
+
                 for name, param in model.named_parameters():
                     if "edge_embedders" in name:
                         edge_embedder_params.append(param)
@@ -582,11 +683,11 @@ def run_pretrain_finetune_experiment_equiv():
                         token_embedder_params.append(param)
                     else:
                         gnn_params.append(param)
-                
+
                 optimizer = torch.optim.Adam([
-                    {'params': gnn_params, 'lr': 0.02},            # GNN body
-                    {'params': edge_embedder_params, 'lr': 0.02},  # Edge embedders
-                    {'params': token_embedder_params, 'lr': 0.02}   # Token embedders
+                    {'params': gnn_params,           'lr': 0.02},
+                    {'params': edge_embedder_params, 'lr': 0.02},
+                    {'params': token_embedder_params,'lr': 0.02},
                 ])
 
             for epoch in range(num_finetune_epochs):
@@ -598,8 +699,6 @@ def run_pretrain_finetune_experiment_equiv():
                     optimizer.zero_grad()
                     override_struct_ids = [finetune_task] * x_batch.size(0)
                     preds = model(x_batch, override_struct_ids)
-                    
-                    # preds = model(x_batch, struct_ids)  # (B, n_nodes, out_dim)
                     B, N, C = preds.shape
                     loss = criterion(preds.view(B*N, C), y_batch.view(-1))
                     loss.backward()
@@ -607,24 +706,24 @@ def run_pretrain_finetune_experiment_equiv():
                     total_loss += loss.item()
 
                 avg_train_loss = total_loss / len(finetune_loader)
-                print(f"Trial {trial+1}, Epoch {epoch+1}: Finetune Train Loss = {avg_train_loss:.4f}")
+                finetune_epoch_train.append(avg_train_loss)
+                logger.info(f"Trial {trial+1}, Epoch {epoch+1}: Finetune Train Loss = {avg_train_loss:.4f}")
                 model.eval()
                 with torch.no_grad():
                     val_loss = 0.0
                     num_batches = 0
                     for x_batch, y_batch, struct_ids in val_loader:
                         x_batch, y_batch = x_batch.to(device), y_batch.to(device)
-                        preds = model(x_batch, struct_ids)
+                        preds = model(x_batch, [finetune_task] * x_batch.size(0))
                         B, N, C = preds.shape
                         loss = criterion(preds.view(B*N, C), y_batch.view(-1))
                         val_loss += loss.item()
                         num_batches += 1
                     avg_val_loss = val_loss / num_batches if num_batches > 0 else float('nan')
 
-                print(f"Trial {trial+1}, Epoch {epoch+1}: Val Loss = {avg_val_loss:.4f}")
-            
-            # dump_path = f"edge_feats__{finetune_task}__{experiment_type}__weirdest__trial={trial+1}.npz"
-            # model.dump_edge_features(finetune_task, dump_path)
+                logger.info(f"Trial {trial+1}, Epoch {epoch+1}: Val Loss = {avg_val_loss:.4f}")
+                finetune_epoch_val.append(avg_val_loss)
+
             # === Testing Phase ===
             model.eval()
             with torch.no_grad():
@@ -632,26 +731,96 @@ def run_pretrain_finetune_experiment_equiv():
                 num_batches = 0
                 for x_batch, y_batch, struct_ids in test_loader:
                     x_batch, y_batch = x_batch.to(device), y_batch.to(device)
-                    preds = model(x_batch, struct_ids)  # (B, n_nodes, out_dim)
+                    preds = model(x_batch, [finetune_task] * x_batch.size(0))
                     B, N, C = preds.shape
                     loss = criterion(preds.view(B*N, C), y_batch.view(-1))
                     test_loss += loss.item()
                     num_batches += 1
                 avg_test_loss = test_loss / num_batches
-                print(f"  Test Loss: {avg_test_loss:.4f}")
+                logger.info(f"  Test Loss: {avg_test_loss:.4f}")
 
             results[experiment_type].append(avg_test_loss)
 
     # === Final Results ===
-    print("\n====== Final Summary ======")
+    logger.info("====== Final Summary ======")
     for exp_type in results:
         avg_loss = np.mean(results[exp_type])
         std_loss = np.std(results[exp_type])
-        print(f"{exp_type}: mean={avg_loss:.4f} std={std_loss:.4f}")
+        logger.info(f"{exp_type}: mean={avg_loss:.4f} std={std_loss:.4f}")
+
+    # --- Plot last trial's pretrain+finetune curves ---
+    if pretrain_epoch_losses or finetune_epoch_train:
+        plot_pretrain_finetune(
+            pretrain_losses=pretrain_epoch_losses,
+            finetune_train_losses=finetune_epoch_train,
+            finetune_val_losses=finetune_epoch_val or None,
+            title=f"Pretrain → Finetune ({finetune_task})",
+            save_path=None,
+            show=True,
+        )
 
 
 
 
 
 if __name__ == "__main__":
-   run_pretrain_finetune_experiment_equiv()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode', type=str, default="multitask", choices=["pretrain", "multitask"])
+    parser.add_argument('--r', type=float, default=0.4, help='data sample units (multitask only)')
+    parser.add_argument('--trials', type=int, default=1)
+    parser.add_argument('--T', type=int, default=1, help='number of 3-task combo')
+    parser.add_argument('--n_task', type=int, default=None, help='number of tasks')
+    parser.add_argument('--batch_size', type=int, default=64, help='training batch size')
+    parser.add_argument('--vocab_size', type=int, default=7)
+    parser.add_argument('--num_epochs', type=int, default=40, help='finetune/multitask training epochs')
+    parser.add_argument('--num_pretrain_epochs', type=int, default=15, help='pretraining epochs (pretrain mode only)')
+    parser.add_argument('--finetune_task', type=str, default=None,
+                        help='task to fine-tune on (pretrain mode); defaults to last task in loaded set')
+
+    parser.add_argument('--logging',  action='store_true', help='also log to a file')
+    parser.add_argument('--single',   action='store_true', help='single task baseline')
+    parser.add_argument('--same_bs',  action='store_true', help='same bs across different n_tasks')
+    parser.add_argument('--non_equiv',action='store_true', help='run non-equivariant baseline')
+
+    args = parser.parse_args()
+
+    # --- Configure logging ---
+    log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    handlers = [logging.StreamHandler(sys.stdout)]
+
+    if args.logging:
+        if args.mode == "pretrain":
+            ft = args.finetune_task if args.finetune_task else "default"
+            name = f"pretrain_ft={ft}_T={args.T}_trials={args.trials}_vocab={args.vocab_size}_nonEquiv={args.non_equiv}"
+        elif args.single:
+            name = f"single_T=1_trials={args.trials}_vocab={args.vocab_size}_nonEquiv={args.non_equiv}"
+        elif args.n_task is not None:
+            name = f"{args.mode}_n={args.n_task}_trials={args.trials}_vocab={args.vocab_size}"
+        else:
+            name = f"{args.mode}_T={args.T}_trials={args.trials}_vocab={args.vocab_size}"
+        save_path = f"SyntheticTaskSeq/logs/{name}"
+        os.makedirs(save_path, exist_ok=True)
+        log_file_path = os.path.join(save_path, f"experiment_r={args.r}_bs={args.batch_size}.log")
+        handlers.append(logging.FileHandler(log_file_path, mode='w'))
+
+    logging.basicConfig(level=logging.INFO, format=log_format, handlers=handlers)
+
+    if args.mode == "pretrain":
+        run_pretrain_finetune_experiment_equiv(
+            finetune_task=args.finetune_task,
+            T=args.T,
+            n_task=args.n_task,
+            trials=args.trials,
+            bs=args.batch_size,
+            vocab_size=args.vocab_size,
+            non_equiv=args.non_equiv,
+            num_pretrain_epochs=args.num_pretrain_epochs,
+            num_finetune_epochs=args.num_epochs,
+        )
+    elif args.mode == "multitask" or args.single:
+        run_multitask_experiments(r=args.r, T=args.T, bs=args.batch_size, trials=args.trials,
+                                  single=args.single, n_task=args.n_task, same_bs=args.same_bs,
+                                  vocab_size=args.vocab_size, non_equiv=args.non_equiv, num_epochs=args.num_epochs)
+
+    if args.logging:
+        logger.info(f"Logs written to: {log_file_path}")
