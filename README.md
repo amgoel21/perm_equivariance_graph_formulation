@@ -66,7 +66,7 @@ Task universe is ordered by complexity; `--n_task N` selects the **last N** task
 
 ### `equiv_experiments.py` — Equivariant Classification
 
-*(Results correspond to **Figures 4–8** in the paper)*
+*(Results correspond to **Figures 4–7** in the paper)*
 
 #### Functions
 
