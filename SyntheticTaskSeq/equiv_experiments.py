@@ -334,7 +334,7 @@ def run_multitask_experiments(r=0.4, T=1, bs=64, trials=1, single=False,
     #     (1.0, 0.2, 0.2),
     #     (0.2, 1.0, 0.2),
     # ]
-    #settings = [tuple([r]*k), tuple([0]*(k-1) + [r])]  # <-- must match k; will error if k != 3
+    settings = [tuple([r]*k)]  # set same r units for all tasks
     if single:
         settings = [tuple([0]*(k-3) + [r] + [0]*2), tuple([0]*(k-2) + [r] + [0]), tuple([0]*(k-1) + [r])]
         #settings = [tuple([0]*(k-1) + [r])]
